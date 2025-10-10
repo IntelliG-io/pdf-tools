@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf2docxplus"
+version = "0.1.0"
+description = "High-fidelity PDF to DOCX conversion with metadata preservation"
+authors = [{name = "AI Developer", email = "developer@example.com"}]
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "pdf2docx>=0.5",
+    "pypdf>=3.0.0",
+    "python-docx>=0.8.11",
+    "Pillow>=9.0.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["pdf2docxplus*"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.0",
+    "mypy>=1.5",
+    "black>=23.0",
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra"
+testpaths = ["pdf2docxplus/tests"]
+
+[tool.black]
+target-version = ["py310"]
+line-length = 100
