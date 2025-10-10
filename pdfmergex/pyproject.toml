@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdfmergex"
+version = "0.1.0"
+description = "Lightweight PDF merging and optimization utilities"
+readme = "README.md"
+authors = [
+    { name = "PDF Tools" }
+]
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "pypdf>=4.0,<6.0",
+]
+keywords = ["pdf", "merge", "qpdf", "optimize"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "pytest-cov>=4",
+    "flake8>=6",
+]
+
+[project.urls]
+Homepage = "https://example.com/pdfmergex"
+Repository = "https://example.com/pdfmergex/repository"
