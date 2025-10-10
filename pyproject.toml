@@ -39,14 +39,15 @@ Repository = "https://github.com/yourusername/intellipdf"
 Documentation = "https://github.com/yourusername/intellipdf#readme"
 
 [tool.hatch.build.targets.wheel]
-packages = ["intellipdf"]
+packages = ["packages/intellipdf"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-vv --cov=intellipdf --cov-report=term-missing --cov-fail-under=90"
+pythonpath = ["packages"]
 
 [tool.coverage.run]
-source = ["intellipdf"]
+source = ["packages/intellipdf"]
 branch = true
 
 [tool.coverage.report]
