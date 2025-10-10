@@ -1,23 +1,26 @@
-# pdfsplitx
+# IntelliPDF
 
-`pdfsplitx` is a lightweight, production-ready Python library for splitting and
-extracting PDF pages. It is designed for embedding into other projects that
-need straightforward, well-typed utilities on top of
-[`pypdf`](https://pypi.org/project/pypdf/).
+IntelliPDF is a unified, production-ready Python toolkit that provides PDF
+splitting, merging, and compression utilities on top of
+[`pypdf`](https://pypi.org/project/pypdf/). The package bundles the
+functionality that previously lived in separate projects into a single
+well-typed, well-tested library.
 
 ## Features
 
-- Split PDFs using inclusive page ranges (`1-3,5,7-9`) or explicit page lists.
-- Extract selected pages into a new PDF while preserving document metadata.
-- Validate PDFs before processing and inspect document information.
-- Optional post-processing using [`qpdf`](https://qpdf.sourceforge.io/) when
-  available by setting `PDFSPLITX_OPTIMIZE=1`.
-- Fully typed, well-tested codebase ready for redistribution.
+- Split PDFs into page ranges or explicit page selections while preserving
+  metadata.
+- Extract specific pages into a standalone PDF document.
+- Merge multiple PDFs, optionally optimising the result with `qpdf` when
+  available.
+- Compress PDFs using configurable optimisation backends and surface detailed
+  compression metrics.
+- Validate documents and query document information before operating on them.
 
 ## Installation
 
 ```bash
-pip install pdfsplitx
+pip install intellipdf
 ```
 
 ## Usage
@@ -25,21 +28,33 @@ pip install pdfsplitx
 ```python
 from pathlib import Path
 
-from pdfsplitx import extract_pages, get_pdf_info, split_pdf, validate_pdf
+from intellipdf import (
+    compress_document,
+    extract_document_pages,
+    merge_documents,
+    split_document,
+)
 
 source = Path("document.pdf")
-validate_pdf(source)
+output_dir = Path("output")
 
-# Split into two ranges: pages 1-3 and 4-6.
-parts = split_pdf(source, Path("output"), mode="range", ranges="1-3,4-6")
+# Split into ranges: pages 1-3 and 4-6.
+parts = split_document(source, output_dir, mode="range", ranges="1-3,4-6")
 
-# Extract specific pages to a single file.
-extract_pages(source, [1, 4, 8], Path("highlights.pdf"))
+# Extract individual pages to a single file.
+extract_document_pages(source, [1, 4, 8], Path("highlights.pdf"))
 
-# Inspect metadata and page count.
-info = get_pdf_info(source)
-print(info["pages"], info["metadata"].get("/Title"))
+# Merge multiple PDFs into one.
+merge_documents([Path("a.pdf"), Path("b.pdf")], Path("combined.pdf"))
+
+# Compress a document and inspect the resulting metrics.
+result = compress_document(source, Path("compressed.pdf"))
+print(result.compressed_size, result.backend)
 ```
+
+Set the environment variable `INTELLIPDF_SPLIT_OPTIMIZE=1` (or the more general
+`INTELLIPDF_OPTIMIZE=1`) to enable optional `qpdf`-based optimisation after
+splitting.
 
 ## Development
 

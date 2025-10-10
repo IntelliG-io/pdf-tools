@@ -7,16 +7,26 @@ from typing import Iterable
 import pytest
 from pypdf import PdfReader
 
-from pdfsplitx import extract_pages, get_pdf_info, split_pdf, validate_pdf
-from pdfsplitx.exceptions import InvalidPageRangeError, PDFValidationError
-from pdfsplitx.optimizers import optimize_pdf
-from pdfsplitx import splitter
-from pdfsplitx.utils import build_output_filename, coerce_path, normalize_pages, parse_page_ranges
+from intellipdf import (
+    extract_document_pages,
+    get_split_info,
+    split_document,
+    validate_split_pdf,
+)
+from intellipdf.split import splitter
+from intellipdf.split.exceptions import InvalidPageRangeError, PDFValidationError
+from intellipdf.split.optimizers import optimize_pdf
+from intellipdf.split.utils import (
+    build_output_filename,
+    coerce_path,
+    normalize_pages,
+    parse_page_ranges,
+)
 
 
 def test_split_pdf_by_ranges(sample_pdf: Path, tmp_path: Path) -> None:
     output_dir = tmp_path / "ranges"
-    outputs = split_pdf(
+    outputs = split_document(
         sample_pdf,
         output_dir,
         mode="range",
@@ -36,7 +46,7 @@ def test_split_pdf_by_ranges(sample_pdf: Path, tmp_path: Path) -> None:
 
 def test_split_pdf_by_pages(sample_pdf: Path, tmp_path: Path) -> None:
     output_dir = tmp_path / "pages"
-    outputs = split_pdf(
+    outputs = split_document(
         sample_pdf,
         output_dir,
         mode="pages",
@@ -52,12 +62,12 @@ def test_split_pdf_by_pages(sample_pdf: Path, tmp_path: Path) -> None:
     for path in outputs:
         reader = PdfReader(str(path))
         assert len(reader.pages) == 1
-        assert reader.metadata.get("/Producer") == "pdfsplitx-tests"
+        assert reader.metadata.get("/Producer") == "intellipdf-tests"
 
 
 def test_extract_pages(sample_pdf: Path, tmp_path: Path) -> None:
     output = tmp_path / "extract.pdf"
-    result = extract_pages(sample_pdf, [2, 4], output)
+    result = extract_document_pages(sample_pdf, [2, 4], output)
 
     reader = PdfReader(str(result))
     assert len(reader.pages) == 2
@@ -66,20 +76,20 @@ def test_extract_pages(sample_pdf: Path, tmp_path: Path) -> None:
 
 def test_invalid_pages_raises(sample_pdf: Path, tmp_path: Path) -> None:
     with pytest.raises(InvalidPageRangeError):
-        split_pdf(sample_pdf, tmp_path, mode="pages", pages=[0])
+        split_document(sample_pdf, tmp_path, mode="pages", pages=[0])
 
     with pytest.raises(InvalidPageRangeError):
-        split_pdf(sample_pdf, tmp_path, mode="range", ranges="10-12")
+        split_document(sample_pdf, tmp_path, mode="range", ranges="10-12")
 
 
 def test_validation_and_info(sample_pdf: Path, empty_pdf: Path) -> None:
-    assert validate_pdf(sample_pdf) is True
-    info = get_pdf_info(sample_pdf)
+    assert validate_split_pdf(sample_pdf) is True
+    info = get_split_info(sample_pdf)
     assert info["pages"] == 5
     assert info["metadata"]["/Title"] == "Sample"
 
     with pytest.raises(PDFValidationError):
-        validate_pdf(empty_pdf)
+        validate_split_pdf(empty_pdf)
 
 
 def test_range_and_page_parsers(sample_pdf: Path) -> None:
@@ -96,6 +106,9 @@ def test_range_and_page_parsers(sample_pdf: Path) -> None:
 
     name = build_output_filename("my file", tuple_ranges[0])
     assert name == "my_file_pages_1-3.pdf"
+
+    single = build_output_filename("base", 2)
+    assert single == "base_page_2.pdf"
 
     with pytest.raises(InvalidPageRangeError):
         parse_page_ranges(None, total_pages=len(reader.pages))
@@ -122,8 +135,8 @@ def test_optimize_pdf_branches(monkeypatch: pytest.MonkeyPatch, sample_pdf: Path
         dest = Path(command[-1])
         dest.write_bytes(b"%PDF-1.4\n")
 
-    monkeypatch.setattr("pdfsplitx.optimizers.shutil.which", fake_which)
-    monkeypatch.setattr("pdfsplitx.optimizers.subprocess.run", fake_run)
+    monkeypatch.setattr("intellipdf.split.optimizers.shutil.which", fake_which)
+    monkeypatch.setattr("intellipdf.split.optimizers.subprocess.run", fake_run)
 
     destination = tmp_path / "optimised.pdf"
     assert optimize_pdf(sample_pdf, destination) is True
@@ -133,7 +146,7 @@ def test_optimize_pdf_branches(monkeypatch: pytest.MonkeyPatch, sample_pdf: Path
 def test_optimize_pdf_handles_missing_and_failure(
     monkeypatch: pytest.MonkeyPatch, sample_pdf: Path, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr("pdfsplitx.optimizers.shutil.which", lambda _: None)
+    monkeypatch.setattr("intellipdf.split.optimizers.shutil.which", lambda _: None)
     destination = tmp_path / "skip.pdf"
     destination.write_bytes(b"data")
     assert optimize_pdf(sample_pdf, destination) is False
@@ -144,27 +157,27 @@ def test_optimize_pdf_handles_missing_and_failure(
     def fake_run(command: Iterable[str], check: bool, stdout, stderr) -> None:  # type: ignore[override]
         raise subprocess.CalledProcessError(returncode=1, cmd=list(command))
 
-    monkeypatch.setattr("pdfsplitx.optimizers.shutil.which", fake_which)
-    monkeypatch.setattr("pdfsplitx.optimizers.subprocess.run", fake_run)
+    monkeypatch.setattr("intellipdf.split.optimizers.shutil.which", fake_which)
+    monkeypatch.setattr("intellipdf.split.optimizers.subprocess.run", fake_run)
     assert optimize_pdf(sample_pdf, destination) is False
 
 
 def test_split_pdf_respects_environment(monkeypatch: pytest.MonkeyPatch, sample_pdf: Path, tmp_path: Path) -> None:
     output_dir = tmp_path / "env"
-    monkeypatch.setenv("PDFSPLITX_OPTIMIZE", "1")
+    monkeypatch.setenv("INTELLIPDF_SPLIT_OPTIMIZE", "1")
 
     def fake_optimize(src: Path, dst: Path) -> bool:  # type: ignore[override]
         dst.write_bytes(Path(src).read_bytes())
         return True
 
     monkeypatch.setattr(splitter, "optimize_pdf", fake_optimize)
-    outputs = split_pdf(sample_pdf, output_dir, mode="pages", pages=[1])
+    outputs = split_document(sample_pdf, output_dir, mode="pages", pages=[1])
     assert outputs[0].exists()
 
 
 def test_validate_pdf_error_branches(monkeypatch: pytest.MonkeyPatch, sample_pdf: Path) -> None:
     with pytest.raises(PDFValidationError):
-        validate_pdf(sample_pdf.parent / "missing.pdf")
+        validate_split_pdf(sample_pdf.parent / "missing.pdf")
 
     class DummyReader:
         def __init__(self, *_: object, **__: object) -> None:
@@ -174,5 +187,5 @@ def test_validate_pdf_error_branches(monkeypatch: pytest.MonkeyPatch, sample_pdf
         def decrypt(self, _: str) -> None:
             return None
 
-    monkeypatch.setattr("pdfsplitx.validators.PdfReader", lambda path: DummyReader())
-    assert validate_pdf(sample_pdf) is True
+    monkeypatch.setattr("intellipdf.split.validators.PdfReader", lambda path: DummyReader())
+    assert validate_split_pdf(sample_pdf) is True
