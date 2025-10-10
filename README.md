@@ -1,10 +1,18 @@
 # IntelliPDF
 
-IntelliPDF is a unified, production-ready Python toolkit that provides PDF
-splitting, merging, and compression utilities on top of
-[`pypdf`](https://pypi.org/project/pypdf/). The package bundles the
-functionality that previously lived in separate projects into a single
-well-typed, well-tested library.
+IntelliPDF is now organised as a small monorepo that bundles everything
+required to build PDF-centric workflows:
+
+- **`packages/intellipdf`** – the core Python toolkit that provides PDF
+  splitting, merging, and compression utilities on top of
+  [`pypdf`](https://pypi.org/project/pypdf/).
+- **`apps/backend`** – a FastAPI service that exposes the library’s
+  functionality over HTTP for automation or browser clients.
+- **`apps/frontend`** – a Next.js dashboard that talks to the backend for a
+  user-friendly experience.
+
+The shared library remains a production-ready, well-typed, and well-tested
+foundation for the services that sit on top of it.
 
 ## Features
 
@@ -58,10 +66,14 @@ splitting.
 
 ## Development
 
-```bash
-pip install -e .[dev]
-pytest
-```
+| Area      | How to get started |
+|-----------|--------------------|
+| Library   | `pip install -e packages/intellipdf[dev]` then `pytest` |
+| Backend   | Follow the setup steps in `apps/backend/README.md` and run `uvicorn app.main:app --reload` |
+| Frontend  | Follow `apps/frontend/README.md` and run `npm run dev` |
+
+The repository root still includes a `pyproject.toml` so the library can be
+installed with `pip install .` if required.
 
 ## License
 
