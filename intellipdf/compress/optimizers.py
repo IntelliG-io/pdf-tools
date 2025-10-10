@@ -10,7 +10,7 @@ from typing import Iterable, Sequence
 
 from .utils import run_subprocess, which
 
-_LOGGER = logging.getLogger("pdfcompressx")
+_LOGGER = logging.getLogger("intellipdf.compress")
 
 
 class BackendType(str, Enum):

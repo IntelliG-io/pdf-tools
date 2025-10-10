@@ -11,7 +11,7 @@ from .exceptions import InvalidPDFError
 from .optimizers import BackendType, detect_backend
 from .utils import resolve_path, run_subprocess
 
-_LOGGER = logging.getLogger("pdfcompressx")
+_LOGGER = logging.getLogger("intellipdf.compress")
 
 
 def validate_pdf(path: str | Path, *, use_external: bool = True) -> None:

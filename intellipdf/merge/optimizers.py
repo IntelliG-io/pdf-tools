@@ -1,4 +1,4 @@
-"""Optimization helpers for :mod:`pdfmergex`."""
+"""Optimization helpers for the :mod:`intellipdf.merge` package."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from .exceptions import PdfOptimizationError
 from .utils import PathLike, ensure_path
 from .validators import validate_pdf
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("intellipdf.merge")
 
 
 def _qpdf_available() -> str | None:

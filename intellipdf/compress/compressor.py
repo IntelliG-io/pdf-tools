@@ -1,4 +1,4 @@
-"""Compression engine for :mod:`pdfcompressx`."""
+"""Compression engine for the :mod:`intellipdf.compress` package."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from .optimizers import Backend, BackendType, detect_backend, run_backend
 from .utils import ensure_parent_dir, resolve_path
 from .validators import validate_pdf
 
-_LOGGER = logging.getLogger("pdfcompressx")
+_LOGGER = logging.getLogger("intellipdf.compress")
 
 CompressionLevelName = Literal["low", "medium", "high"]
 
@@ -94,7 +94,7 @@ def _compress_with_pypdf(source: Path, destination: Path, level: CompressionLeve
         writer.write(target)
 
 
-def _downsample_page_images(page, level: CompressionLevel) -> None:
+def _downsample_page_images(page, level: CompressionLevel) -> None:  # pragma: no cover - relies on Pillow internals
     try:
         images = getattr(page, "images")
     except Exception:  # pragma: no cover - best effort
@@ -162,7 +162,7 @@ def compress_pdf(
     if not source.exists():
         raise FileNotFoundError(source)
 
-    temp_dir = Path(tempfile.mkdtemp(prefix="pdfcompressx-"))
+    temp_dir = Path(tempfile.mkdtemp(prefix="intellipdf-"))
     intermediate = temp_dir / "compressed.pdf"
 
     backend_used: Backend | None = _select_backend()

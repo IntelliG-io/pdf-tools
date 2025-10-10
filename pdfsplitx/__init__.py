@@ -1,15 +1,7 @@
-"""Top-level package for the :mod:`pdfsplitx` library."""
+"""Backward compatibility layer for the legacy :mod:`pdfsplitx` package."""
 
 from __future__ import annotations
 
-from .splitter import split_pdf, extract_pages
-from .validators import get_pdf_info, validate_pdf
+from intellipdf.split import *  # noqa: F401,F403
 
-__all__ = [
-    "split_pdf",
-    "extract_pages",
-    "get_pdf_info",
-    "validate_pdf",
-]
-
-__version__ = "0.1.0"
+from . import splitter  # noqa: F401  (re-export for attribute access)

@@ -1,4 +1,4 @@
-"""Information utilities for :mod:`pdfcompressx`."""
+"""Information utilities for the :mod:`intellipdf.compress` package."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pypdf import PdfReader
 
 from .utils import resolve_path
 
-_LOGGER = logging.getLogger("pdfcompressx")
+_LOGGER = logging.getLogger("intellipdf.compress")
 
 
 @dataclasses.dataclass(slots=True)
