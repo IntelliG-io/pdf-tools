@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-splitter-cli"
+version = "1.0.0"
+description = "Comprehensive CLI tool for splitting PDF files with batch processing and metadata preservation"
+readme = "README.md"
+requires-python = ">=3.7"
+license = {text = "MIT"}
+authors = [
+    {name = "PDF Splitter CLI Contributors"}
+]
+keywords = ["pdf", "split", "splitter", "cli", "batch", "metadata", "pages", "ranges", "chunks", "extract"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Developers",
+    "Topic :: Office/Business",
+    "Topic :: Utilities",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+]
+dependencies = [
+    "pypdf>=3.0.0",
+    "click>=8.0.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/pdf-splitter-cli"
+Documentation = "https://github.com/yourusername/pdf-splitter-cli#readme"
+Repository = "https://github.com/yourusername/pdf-splitter-cli"
+"Bug Reports" = "https://github.com/yourusername/pdf-splitter-cli/issues"
+Changelog = "https://github.com/yourusername/pdf-splitter-cli/blob/main/CHANGELOG.md"
+
+[project.scripts]
+pdf-splitter = "pdf_splitter.cli:cli"
+
+[tool.setuptools]
+packages = ["pdf_splitter"]
+
+[tool.setuptools.package-data]
+pdf_splitter = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=pdf_splitter --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["pdf_splitter"]
+omit = ["*/tests/*", "*/test_*.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
