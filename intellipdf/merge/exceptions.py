@@ -1,4 +1,4 @@
-"""Custom exceptions for :mod:`pdfmergex`."""
+"""Custom exceptions for the :mod:`intellipdf.merge` package."""
 
 from __future__ import annotations
 

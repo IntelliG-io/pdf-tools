@@ -1,10 +1,10 @@
-"""Custom exception types for :mod:`pdfcompressx`."""
+"""Custom exception types for the :mod:`intellipdf.compress` package."""
 
 from __future__ import annotations
 
 
 class PDFCompressXError(Exception):
-    """Base exception for all pdfcompressx related errors."""
+    """Base exception for all :mod:`intellipdf.compress` related errors."""
 
 
 class InvalidPDFError(PDFCompressXError):

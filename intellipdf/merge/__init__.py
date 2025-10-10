@@ -1,9 +1,7 @@
-"""Top-level package for pdfmergex.
+"""Merge utilities for the :mod:`intellipdf` toolkit."""
 
-This package exposes utility functions for merging, validating, and
-optimizing PDF documents. The public API is intentionally small to
-keep the library easy to embed.
-"""
+from __future__ import annotations
+
 from .exceptions import PdfMergeError, PdfOptimizationError, PdfValidationError
 from .merger import merge_pdfs
 from .optimizers import optimize_pdf
@@ -19,5 +17,3 @@ __all__ = [
     "PdfOptimizationError",
     "PDFInfo",
 ]
-
-__version__ = "0.1.0"

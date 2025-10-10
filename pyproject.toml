@@ -3,14 +3,14 @@ requires = ["hatchling>=1.21"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pdfsplitx"
+name = "intellipdf"
 version = "0.1.0"
-description = "Lightweight PDF page splitting and extraction utilities"
+description = "Unified PDF toolkit with split, merge, and compression utilities"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
-authors = [{name = "pdfsplitx Contributors"}]
-keywords = ["pdf", "split", "pypdf", "document-processing"]
+authors = [{name = "IntelliPDF Contributors"}]
+keywords = ["pdf", "split", "merge", "compress", "pypdf", "document-processing"]
 dependencies = [
     "pypdf>=4.0.0",
 ]
@@ -34,19 +34,19 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/pdfsplitx"
-Repository = "https://github.com/yourusername/pdfsplitx"
-Documentation = "https://github.com/yourusername/pdfsplitx#readme"
+Homepage = "https://github.com/yourusername/intellipdf"
+Repository = "https://github.com/yourusername/intellipdf"
+Documentation = "https://github.com/yourusername/intellipdf#readme"
 
 [tool.hatch.build.targets.wheel]
-packages = ["pdfsplitx"]
+packages = ["intellipdf"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-vv --cov=pdfsplitx --cov-report=term-missing --cov-fail-under=90"
+addopts = "-vv --cov=intellipdf --cov-report=term-missing --cov-fail-under=90"
 
 [tool.coverage.run]
-source = ["pdfsplitx"]
+source = ["intellipdf"]
 branch = true
 
 [tool.coverage.report]

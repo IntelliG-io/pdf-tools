@@ -1,4 +1,4 @@
-"""Utility helpers for :mod:`pdfcompressx`."""
+"""Utility helpers for the :mod:`intellipdf.compress` package."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Mapping, MutableMapping, Sequence
 
-_LOGGER = logging.getLogger("pdfcompressx")
+_LOGGER = logging.getLogger("intellipdf.compress")
 
 
 def resolve_path(path: os.PathLike[str] | str) -> Path:

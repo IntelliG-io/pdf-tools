@@ -1,4 +1,4 @@
-"""Merge functionality for :mod:`pdfmergex`."""
+"""Merge functionality for the :mod:`intellipdf.merge` package."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from .exceptions import PdfMergeError
 from .utils import PathLike, ensure_iterable, ensure_path
 from .validators import get_pdf_info, validate_pdf
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("intellipdf.merge")
 
 
 def _load_reader(path: Path) -> PdfReader:

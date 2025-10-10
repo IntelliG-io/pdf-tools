@@ -1,4 +1,4 @@
-"""Validation utilities for :mod:`pdfmergex`."""
+"""Validation utilities for the :mod:`intellipdf.merge` package."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pypdf import PdfReader
 from .exceptions import PdfValidationError
 from .utils import PathLike, ensure_path
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("intellipdf.merge")
 
 
 @dataclass(frozen=True)
