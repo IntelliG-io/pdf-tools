@@ -11,13 +11,13 @@ from typing import Iterable, List, Sequence
 
 from pypdf import PdfReader, PdfWriter
 
-from .exceptions import InvalidPageRangeError, PDFSplitXError
+from .exceptions import IntelliPDFSplitError, InvalidPageRangeError
 from .optimizers import optimize_pdf
 from .utils import PageRange, build_output_filename, coerce_path, normalize_pages, parse_page_ranges
 from .validators import validate_pdf
 
 LOGGER = logging.getLogger("intellipdf.split")
-_OPTIMIZE_ENV_VARS = ("INTELLIPDF_SPLIT_OPTIMIZE", "PDFSPLITX_OPTIMIZE")
+_OPTIMIZE_ENV_VARS = ("INTELLIPDF_SPLIT_OPTIMIZE", "INTELLIPDF_OPTIMIZE")
 
 
 def _should_optimize() -> bool:
@@ -104,7 +104,7 @@ def split_pdf(
             _write_document(writer, destination, metadata)
             generated_files.append(destination)
     else:
-        raise PDFSplitXError(f"Unsupported split mode: {mode}")
+        raise IntelliPDFSplitError(f"Unsupported split mode: {mode}")
 
     return generated_files
 

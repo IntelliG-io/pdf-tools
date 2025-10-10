@@ -5,15 +5,15 @@ from __future__ import annotations
 from typing import Iterable
 
 
-class PDFSplitXError(Exception):
+class IntelliPDFSplitError(Exception):
     """Base exception for all errors raised by :mod:`intellipdf.split`."""
 
 
-class PDFValidationError(PDFSplitXError):
+class PDFValidationError(IntelliPDFSplitError):
     """Raised when validation of a PDF file fails."""
 
 
-class InvalidPageRangeError(PDFSplitXError):
+class InvalidPageRangeError(IntelliPDFSplitError):
     """Raised when the provided page ranges cannot be parsed or validated."""
 
     def __init__(self, ranges: Iterable[object]) -> None:

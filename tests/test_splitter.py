@@ -62,7 +62,7 @@ def test_split_pdf_by_pages(sample_pdf: Path, tmp_path: Path) -> None:
     for path in outputs:
         reader = PdfReader(str(path))
         assert len(reader.pages) == 1
-        assert reader.metadata.get("/Producer") == "pdfsplitx-tests"
+        assert reader.metadata.get("/Producer") == "intellipdf-tests"
 
 
 def test_extract_pages(sample_pdf: Path, tmp_path: Path) -> None:
@@ -164,7 +164,7 @@ def test_optimize_pdf_handles_missing_and_failure(
 
 def test_split_pdf_respects_environment(monkeypatch: pytest.MonkeyPatch, sample_pdf: Path, tmp_path: Path) -> None:
     output_dir = tmp_path / "env"
-    monkeypatch.setenv("PDFSPLITX_OPTIMIZE", "1")
+    monkeypatch.setenv("INTELLIPDF_SPLIT_OPTIMIZE", "1")
 
     def fake_optimize(src: Path, dst: Path) -> bool:  # type: ignore[override]
         dst.write_bytes(Path(src).read_bytes())

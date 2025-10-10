@@ -18,7 +18,7 @@ def sample_pdf(tmp_path: Path) -> Path:
     writer = PdfWriter()
     for _ in range(5):
         writer.add_blank_page(width=200, height=200)
-    writer.add_metadata({"/Producer": "pdfsplitx-tests", "/Title": "Sample"})
+    writer.add_metadata({"/Producer": "intellipdf-tests", "/Title": "Sample"})
     with pdf_path.open("wb") as stream:
         writer.write(stream)
     return pdf_path
