@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdfcompressx"
+version = "0.1.0"
+description = "Configurable, production-ready PDF compression toolkit"
+readme = "README.md"
+authors = [
+    { name = "PDF Tools Team", email = "dev@example.com" },
+]
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+keywords = ["pdf", "compression", "optimization"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "pypdf>=4.0.0,<5.0.0",
+]
+optional-dependencies = { images = ["pillow>=9.0.0"], dev = ["pytest>=7.0", "pytest-cov>=4.0"] }
+
+[project.urls]
+Homepage = "https://github.com/example/pdfcompressx"
+Documentation = "https://github.com/example/pdfcompressx#readme"
+Issues = "https://github.com/example/pdfcompressx/issues"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra"
+testpaths = ["tests"]
