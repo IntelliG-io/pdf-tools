@@ -18,7 +18,7 @@ def _ensure_path(path: PathLike) -> Path:
 
 def _copy_reader_contents(reader: PdfReader) -> PdfWriter:
     writer = PdfWriter()
-    writer.append_pages_from_reader(reader)
+    writer.clone_reader_document_root(reader)
 
     metadata = reader.metadata
     if metadata:

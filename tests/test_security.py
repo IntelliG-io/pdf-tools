@@ -21,6 +21,8 @@ def test_protect_pdf_encrypts_document(sample_pdf: Path, tmp_path: Path) -> None
     assert reader.is_encrypted is True
     assert is_pdf_encrypted(output) is True
     assert reader.decrypt("secret") != 0
+    outline_titles = [item.get("/Title") for item in reader.outline or []]
+    assert "Section 1" in outline_titles
 
 
 def test_protect_pdf_refuses_already_encrypted(sample_pdf: Path, tmp_path: Path) -> None:
@@ -42,6 +44,8 @@ def test_unprotect_pdf_decrypts_document(sample_pdf: Path, tmp_path: Path) -> No
     assert reader.is_encrypted is False
     metadata = reader.metadata
     assert metadata is None or metadata.get("/Title") == "Sample"
+    outline_titles = [item.get("/Title") for item in reader.outline or []]
+    assert "Section 1" in outline_titles
 
 
 def test_unprotect_pdf_requires_correct_password(sample_pdf: Path, tmp_path: Path) -> None:

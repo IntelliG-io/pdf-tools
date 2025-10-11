@@ -21,6 +21,7 @@ def sample_pdf(tmp_path: Path) -> Path:
     writer = PdfWriter()
     for _ in range(5):
         writer.add_blank_page(width=200, height=200)
+    writer.add_outline_item("Section 1", 0)
     writer.add_metadata({"/Producer": "intellipdf-tests", "/Title": "Sample"})
     with pdf_path.open("wb") as stream:
         writer.write(stream)
