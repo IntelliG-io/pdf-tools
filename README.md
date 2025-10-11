@@ -24,6 +24,7 @@ foundation for the services that sit on top of it.
 - Compress PDFs using configurable optimisation backends and surface detailed
   compression metrics.
 - Validate documents and query document information before operating on them.
+- Protect documents with passwords or remove encryption when authorised.
 
 ## Installation
 
@@ -38,9 +39,12 @@ from pathlib import Path
 
 from intellipdf import (
     compress_document,
+    is_document_encrypted,
     extract_document_pages,
     merge_documents,
+    protect_document,
     split_document,
+    unprotect_document,
 )
 
 source = Path("document.pdf")
@@ -58,6 +62,12 @@ merge_documents([Path("a.pdf"), Path("b.pdf")], Path("combined.pdf"))
 # Compress a document and inspect the resulting metrics.
 result = compress_document(source, Path("compressed.pdf"))
 print(result.compressed_size, result.backend)
+
+# Protect a document with a password and later remove it with the correct key.
+secure = protect_document(source, Path("secure.pdf"), "s3cr3t")
+print(is_document_encrypted(secure))
+plain = unprotect_document(secure, Path("plain.pdf"), "s3cr3t")
+print(is_document_encrypted(plain))
 ```
 
 Set the environment variable `INTELLIPDF_SPLIT_OPTIMIZE=1` (or the more general
