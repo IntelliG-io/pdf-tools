@@ -8,7 +8,23 @@ import ToolHeader from "@/components/pdf-tools/ToolHeader";
 import StepProgress from "@/components/pdf-tools/StepProgress";
 import ProcessingButton from "@/components/pdf-tools/ProcessingButton";
 import OperationComplete from "@/components/pdf-tools/OperationComplete";
-import { HelpCircle, Scissors, FileOutput, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  HelpCircle,
+  Scissors,
+  FileOutput,
+  ChevronDown,
+  ChevronUp,
+  ListOrdered,
+  Files,
+  type LucideIcon,
+} from "lucide-react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 // Define split modes
@@ -18,6 +34,76 @@ interface PageRange {
   start: number;
   end: number;
 }
+
+interface SplitMethodConfig {
+  title: string;
+  description: string;
+  hint: string;
+  icon: LucideIcon;
+  input?: {
+    label: string;
+    placeholder: string;
+    description: string;
+    tooltip: string;
+    type: "text" | "number";
+    min?: number;
+  };
+}
+
+const splitMethods: Record<SplitMode, SplitMethodConfig> = {
+  ranges: {
+    title: "Extract Page Ranges",
+    description: "Target specific chapters or sections.",
+    hint: "Provide individual pages or ranges separated by commas.",
+    icon: Scissors,
+    input: {
+      label: "Page ranges",
+      placeholder: "e.g. 1-3, 5, 8-10",
+      description: "Each range will be exported as its own PDF file.",
+      tooltip: "Enter page numbers and/or page ranges separated by commas. For example: 1,3,5-12",
+      type: "text",
+    },
+  },
+  pages: {
+    title: "Split at Specific Pages",
+    description: "Break the PDF wherever you need new files.",
+    hint: "List the pages where a new document should begin.",
+    icon: FileOutput,
+    input: {
+      label: "Split after pages",
+      placeholder: "e.g. 3, 5, 8",
+      description: "We'll create a new PDF at each page number you provide.",
+      tooltip:
+        "Enter page numbers where the PDF should be split. Example: 3,5,8 creates 4 PDFs (pages 1-2, 3-4, 5-7, and 8-end).",
+      type: "text",
+    },
+  },
+  everyNPages: {
+    title: "Split Every N Pages",
+    description: "Generate evenly sized documents.",
+    hint: "Tell us how many pages each new document should include.",
+    icon: ListOrdered,
+    input: {
+      label: "Pages per document",
+      placeholder: "Enter a number",
+      description: "We'll keep creating new PDFs until we run out of pages.",
+      tooltip:
+        "Enter the number of pages each new PDF should contain. Example: 2 splits a 6-page PDF into three 2-page documents.",
+      type: "number",
+      min: 1,
+    },
+  },
+  all: {
+    title: "Extract All Pages",
+    description: "Turn every page into its own PDF.",
+    hint: "Perfect when you need each page as its own document.",
+    icon: Files,
+  },
+};
+
+const rangeInputConfig = splitMethods.ranges.input!;
+const specificPagesInputConfig = splitMethods.pages.input!;
+const everyNPagesInputConfig = splitMethods.everyNPages.input!;
 
 const SplitPDF: React.FC = () => {
   const [files, setFiles] = useState<File[]>([]);
@@ -195,38 +281,40 @@ const SplitPDF: React.FC = () => {
       }
       
       // Handle different split modes
-      switch (splitMode) {
-        case "ranges":
-          const ranges = parsePageRanges(pageRange);
-          if (ranges.length > 0) {
-            options.ranges = ranges;
-          } else {
-            toast({
-              title: "Error",
-              description: "Please enter valid page ranges (e.g., 1-3, 5, 8-10).",
-              variant: "destructive",
-              duration: 5000,
-            });
-            setProcessing(false);
-            return;
+        switch (splitMode) {
+          case "ranges": {
+            const ranges = parsePageRanges(pageRange);
+            if (ranges.length > 0) {
+              options.ranges = ranges;
+            } else {
+              toast({
+                title: "Error",
+                description: "Please enter valid page ranges (e.g., 1-3, 5, 8-10).",
+                variant: "destructive",
+                duration: 5000,
+              });
+              setProcessing(false);
+              return;
+            }
+            break;
           }
-          break;
-          
-        case "pages":
-          const pages = parseSpecificPages(specificPages);
-          if (pages.length > 0) {
-            options.pages = pages;
-          } else {
-            toast({
-              title: "Error",
-              description: "Please enter valid page numbers to split at (e.g., 3, 5, 8).",
-              variant: "destructive",
-              duration: 5000,
-            });
-            setProcessing(false);
-            return;
+
+          case "pages": {
+            const pages = parseSpecificPages(specificPages);
+            if (pages.length > 0) {
+              options.pages = pages;
+            } else {
+              toast({
+                title: "Error",
+                description: "Please enter valid page numbers to split at (e.g., 3, 5, 8).",
+                variant: "destructive",
+                duration: 5000,
+              });
+              setProcessing(false);
+              return;
+            }
+            break;
           }
-          break;
           
         case "everyNPages":
           if (everyNPages < 1) {
@@ -304,221 +392,242 @@ const SplitPDF: React.FC = () => {
             />
           </div>
         );
-      case 2:
+      case 2: {
+        const activeMethod = splitMethods[splitMode];
+        const ActiveIcon = activeMethod.icon;
+
         return (
-          <div className="max-w-xl mx-auto w-full animate-fade-in animate-once">
-            <h3 className="text-lg font-medium mb-4">Select Pages to Extract</h3>
-            <div className="border rounded-lg p-6 bg-secondary/30">
-              
-              <div className="mb-4">
-                <label className="block text-sm font-medium mb-2">Split Method</label>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div 
-                    className={cn(
-                      "flex flex-col items-center justify-center p-4 rounded-lg border-2 cursor-pointer transition-all",
-                      splitMode === "ranges" 
-                        ? "border-primary/80 bg-primary/5" 
-                        : "border-border hover:border-primary/50"
-                    )}
-                    onClick={() => setSplitMode("ranges")}
-                  >
-                    <Scissors className="w-6 h-6 mb-2 text-primary" />
-                    <span className="font-medium">Extract Page Ranges</span>
-                    <span className="text-xs text-muted-foreground text-center mt-1">
-                      Extract specific page ranges to a new PDF
-                    </span>
-                  </div>
-                  
-                  <div 
-                    className={cn(
-                      "flex flex-col items-center justify-center p-4 rounded-lg border-2 cursor-pointer transition-all",
-                      splitMode === "pages" 
-                        ? "border-primary/80 bg-primary/5" 
-                        : "border-border hover:border-primary/50"
-                    )}
-                    onClick={() => setSplitMode("pages")}
-                  >
-                    <FileOutput className="w-6 h-6 mb-2 text-primary" />
-                    <span className="font-medium">Split at Specific Pages</span>
-                    <span className="text-xs text-muted-foreground text-center mt-1">
-                      Split the PDF into multiple parts
-                    </span>
-                  </div>
+          <div className="max-w-4xl mx-auto w-full animate-fade-in animate-once">
+            <TooltipProvider delayDuration={150}>
+              <div className="space-y-6">
+                <div className="space-y-1">
+                  <h3 className="text-xl font-semibold">Select Pages to Extract</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Choose how you want to split your PDF and configure the details for the selected method.
+                  </p>
                 </div>
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-                  <div 
-                    className={cn(
-                      "flex flex-col items-center justify-center p-4 rounded-lg border-2 cursor-pointer transition-all",
-                      splitMode === "everyNPages" 
-                        ? "border-primary/80 bg-primary/5" 
-                        : "border-border hover:border-primary/50"
-                    )}
-                    onClick={() => setSplitMode("everyNPages")}
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6 mb-2 text-primary">
-                      <path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M3 9v10a2 2 0 0 0 2 2h4M21 9v10a2 2 0 0 1-2 2h-4" />
-                    </svg>
-                    <span className="font-medium">Split Every N Pages</span>
-                    <span className="text-xs text-muted-foreground text-center mt-1">
-                      Split after every N pages
-                    </span>
-                  </div>
-                  
-                  <div 
-                    className={cn(
-                      "flex flex-col items-center justify-center p-4 rounded-lg border-2 cursor-pointer transition-all",
-                      splitMode === "all" 
-                        ? "border-primary/80 bg-primary/5" 
-                        : "border-border hover:border-primary/50"
-                    )}
-                    onClick={() => setSplitMode("all")}
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6 mb-2 text-primary">
-                      <rect x="2" y="6" width="4" height="12" rx="1" />
-                      <rect x="10" y="6" width="4" height="12" rx="1" />
-                      <rect x="18" y="6" width="4" height="12" rx="1" />
-                    </svg>
-                    <span className="font-medium">Extract All Pages</span>
-                    <span className="text-xs text-muted-foreground text-center mt-1">
-                      Split into individual pages
-                    </span>
-                  </div>
+
+                <div className="grid gap-6 lg:grid-cols-[1.05fr_1fr]">
+                  <Card className="h-full">
+                    <CardHeader>
+                      <CardTitle className="text-lg">Split method</CardTitle>
+                      <CardDescription>
+                        Choose the workflow that best matches what you need to export.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="pt-0">
+                      <RadioGroup
+                        value={splitMode}
+                        onValueChange={(value: SplitMode) => setSplitMode(value)}
+                        className="grid gap-3 md:grid-cols-2"
+                      >
+                        {(Object.entries(splitMethods) as [SplitMode, SplitMethodConfig][]).map(([mode, method]) => {
+                          const Icon = method.icon;
+                          return (
+                            <div key={mode}>
+                              <RadioGroupItem value={mode} id={`split-mode-${mode}`} className="sr-only" />
+                              <label
+                                htmlFor={`split-mode-${mode}`}
+                                className={cn(
+                                  "relative flex h-full cursor-pointer flex-col justify-between rounded-lg border p-4 text-left transition-colors",
+                                  "bg-background hover:border-primary/40 hover:bg-primary/5",
+                                  splitMode === mode && "border-primary bg-primary/5 shadow-sm ring-2 ring-primary/20",
+                                )}
+                              >
+                                <div className="flex items-start gap-3">
+                                  <div className="rounded-md bg-primary/10 p-2 text-primary">
+                                    <Icon className="h-5 w-5" />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <p className="font-medium leading-none">{method.title}</p>
+                                    <p className="text-xs text-muted-foreground">{method.description}</p>
+                                  </div>
+                                </div>
+                                <p className="mt-3 text-xs text-muted-foreground">{method.hint}</p>
+                                {splitMode === mode && (
+                                  <span className="absolute right-4 top-4 text-xs font-medium text-primary">Selected</span>
+                                )}
+                              </label>
+                            </div>
+                          );
+                        })}
+                      </RadioGroup>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="h-full">
+                    <CardHeader className="flex flex-row items-start gap-3">
+                      <div className="rounded-md bg-primary/10 p-2 text-primary">
+                        <ActiveIcon className="h-5 w-5" />
+                      </div>
+                      <div className="space-y-1">
+                        <CardTitle className="text-lg">{activeMethod.title}</CardTitle>
+                        <CardDescription>{activeMethod.description}</CardDescription>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-6">
+                      <p className="text-sm text-muted-foreground">{activeMethod.hint}</p>
+
+                      {splitMode === "ranges" && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label htmlFor="page-range" className="text-sm font-medium">
+                              {rangeInputConfig.label}
+                            </Label>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  className="rounded-full p-1 text-muted-foreground transition-colors hover:text-foreground"
+                                >
+                                  <HelpCircle className="h-4 w-4" />
+                                  <span className="sr-only">Page range help</span>
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" align="end" className="max-w-xs text-xs">
+                                {rangeInputConfig.tooltip}
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
+                          <Input
+                            id="page-range"
+                            placeholder={rangeInputConfig.placeholder}
+                            value={pageRange}
+                            onChange={(e) => setPageRange(e.target.value)}
+                          />
+                          <p className="text-xs text-muted-foreground">{rangeInputConfig.description}</p>
+                        </div>
+                      )}
+
+                      {splitMode === "pages" && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label htmlFor="split-pages" className="text-sm font-medium">
+                              {specificPagesInputConfig.label}
+                            </Label>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  className="rounded-full p-1 text-muted-foreground transition-colors hover:text-foreground"
+                                >
+                                  <HelpCircle className="h-4 w-4" />
+                                  <span className="sr-only">Specific pages help</span>
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" align="end" className="max-w-xs text-xs">
+                                {specificPagesInputConfig.tooltip}
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
+                          <Input
+                            id="split-pages"
+                            placeholder={specificPagesInputConfig.placeholder}
+                            value={specificPages}
+                            onChange={(e) => setSpecificPages(e.target.value)}
+                          />
+                          <p className="text-xs text-muted-foreground">{specificPagesInputConfig.description}</p>
+                        </div>
+                      )}
+
+                      {splitMode === "everyNPages" && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <Label htmlFor="every-n-pages" className="text-sm font-medium">
+                              {everyNPagesInputConfig.label}
+                            </Label>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  className="rounded-full p-1 text-muted-foreground transition-colors hover:text-foreground"
+                                >
+                                  <HelpCircle className="h-4 w-4" />
+                                  <span className="sr-only">Pages per document help</span>
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" align="end" className="max-w-xs text-xs">
+                                {everyNPagesInputConfig.tooltip}
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
+                          <Input
+                            id="every-n-pages"
+                            type="number"
+                            min={everyNPagesInputConfig.min}
+                            placeholder={everyNPagesInputConfig.placeholder}
+                            value={everyNPages}
+                            onChange={(e) => {
+                              const value = parseInt(e.target.value, 10);
+                              setEveryNPages(Number.isNaN(value) ? 0 : value);
+                            }}
+                          />
+                          <p className="text-xs text-muted-foreground">{everyNPagesInputConfig.description}</p>
+                        </div>
+                      )}
+
+                      {splitMode === "all" && (
+                        <div className="rounded-lg border border-dashed border-primary/30 bg-primary/5 px-4 py-5">
+                          <p className="text-sm font-medium text-primary">Each page becomes its own PDF</p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            We'll package the individual files together in a single ZIP download for you.
+                          </p>
+                        </div>
+                      )}
+
+                      <Separator />
+
+                      <div className="space-y-3">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-auto px-0 text-sm font-medium text-primary hover:text-primary"
+                          onClick={() => setAdvancedOptions(!advancedOptions)}
+                        >
+                          {advancedOptions ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                          Advanced options
+                        </Button>
+
+                        {advancedOptions && (
+                          <div className="space-y-3 rounded-lg border bg-muted/40 p-4">
+                            <div className="space-y-2">
+                              <Label htmlFor="filename-prefix" className="text-sm font-medium">
+                                Filename prefix
+                              </Label>
+                              <Input
+                                id="filename-prefix"
+                                type="text"
+                                placeholder="e.g. chapter, section, part"
+                                value={filenamePrefix}
+                                onChange={(e) => setFilenamePrefix(e.target.value)}
+                              />
+                              <p className="text-xs text-muted-foreground">
+                                This prefix will be added to all created PDF files.
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
                 </div>
+
+                <ProcessingButton
+                  onClick={handleSplitFile}
+                  isProcessing={processing}
+                  disabled={
+                    (splitMode === "ranges" && !pageRange.trim()) ||
+                    (splitMode === "pages" && !specificPages.trim()) ||
+                    (splitMode === "everyNPages" && everyNPages < 1)
+                  }
+                  text="Split PDF"
+                />
               </div>
-              
-              {/* Configuration options based on selected split mode */}
-              <div className="mt-6 pt-4 border-t border-border">
-                {splitMode === "ranges" && (
-                  <div className="mb-4">
-                    <label className="block text-sm font-medium mb-2">Page Ranges</label>
-                    <div className="flex items-center gap-3">
-                      <input 
-                        type="text" 
-                        placeholder="e.g. 1-3, 5, 8-10" 
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                        value={pageRange}
-                        onChange={(e) => setPageRange(e.target.value)}
-                      />
-                      <div className="relative group">
-                        <HelpCircle className="w-5 h-5 text-muted-foreground" />
-                        <div className="absolute right-0 w-64 p-3 bg-foreground text-background text-xs rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-opacity z-10">
-                          Enter page numbers and/or page ranges separated by commas. For example: 1,3,5-12
-                        </div>
-                      </div>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Each range will be extracted as a separate PDF file.
-                    </p>
-                  </div>
-                )}
-                
-                {splitMode === "pages" && (
-                  <div className="mb-4">
-                    <label className="block text-sm font-medium mb-2">Split at Pages</label>
-                    <div className="flex items-center gap-3">
-                      <input 
-                        type="text" 
-                        placeholder="e.g. 3, 5, 8" 
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                        value={specificPages}
-                        onChange={(e) => setSpecificPages(e.target.value)}
-                      />
-                      <div className="relative group">
-                        <HelpCircle className="w-5 h-5 text-muted-foreground" />
-                        <div className="absolute right-0 w-64 p-3 bg-foreground text-background text-xs rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-opacity z-10">
-                          Enter page numbers where the PDF should be split. For example: 3,5,8 would create 4 PDFs (pages 1-2, 3-4, 5-7, and 8-end).
-                        </div>
-                      </div>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      The PDF will be split at these page numbers, creating multiple PDFs.
-                    </p>
-                  </div>
-                )}
-                
-                {splitMode === "everyNPages" && (
-                  <div className="mb-4">
-                    <label className="block text-sm font-medium mb-2">Pages per Document</label>
-                    <div className="flex items-center gap-3">
-                      <input 
-                        type="number" 
-                        min="1"
-                        className="flex h-10 w-32 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                        value={everyNPages}
-                        onChange={(e) => setEveryNPages(parseInt(e.target.value, 10))}
-                      />
-                      <div className="relative group">
-                        <HelpCircle className="w-5 h-5 text-muted-foreground" />
-                        <div className="absolute right-0 w-64 p-3 bg-foreground text-background text-xs rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-opacity z-10">
-                          Enter the number of pages each new PDF should contain. For example: If set to 2, a 6-page PDF would be split into 3 PDFs with 2 pages each.
-                        </div>
-                      </div>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Each new PDF will contain this many pages.
-                    </p>
-                  </div>
-                )}
-                
-                {splitMode === "all" && (
-                  <div className="mb-4">
-                    <p className="text-sm text-muted-foreground">
-                      Each page of the PDF will be extracted as a separate PDF file. The files will be delivered as a ZIP archive.
-                    </p>
-                  </div>
-                )}
-              </div>
-              
-              {/* Advanced options section */}
-              <div className="mt-4 pt-4 border-t border-border">
-                <button
-                  type="button"
-                  className="flex items-center text-sm font-medium text-primary hover:text-primary/80 focus:outline-none"
-                  onClick={() => setAdvancedOptions(!advancedOptions)}
-                >
-                  {advancedOptions ? (
-                    <ChevronUp className="h-4 w-4 mr-1" />
-                  ) : (
-                    <ChevronDown className="h-4 w-4 mr-1" />
-                  )}
-                  Advanced Options
-                </button>
-                
-                {advancedOptions && (
-                  <div className="mt-4 space-y-4 animate-fade-in animate-once">
-                    <div>
-                      <label className="block text-sm font-medium mb-2">
-                        Filename Prefix
-                      </label>
-                      <input
-                        type="text"
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                        placeholder="e.g. chapter, section, part"
-                        value={filenamePrefix}
-                        onChange={(e) => setFilenamePrefix(e.target.value)}
-                      />
-                      <p className="text-xs text-muted-foreground mt-1">
-                        This prefix will be added to all created PDF files.
-                      </p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-            
-            <ProcessingButton 
-              onClick={handleSplitFile}
-              isProcessing={processing}
-              disabled={
-                (splitMode === "ranges" && !pageRange.trim()) ||
-                (splitMode === "pages" && !specificPages.trim()) ||
-                (splitMode === "everyNPages" && everyNPages < 1)
-              }
-              text="Split PDF"
-            />
+            </TooltipProvider>
           </div>
         );
+      }
       case 3:
         return (
           <OperationComplete 
