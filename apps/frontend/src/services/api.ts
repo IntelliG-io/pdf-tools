@@ -10,11 +10,6 @@ const createPdfBlob = (label: string) =>
     type: 'application/pdf',
   });
 
-const createDocxBlob = (label: string) =>
-  new Blob([`Dummy DOCX document for ${label}`], {
-    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  });
-
 const createZipBlob = (label: string) =>
   new Blob([`Dummy ZIP archive for ${label}`], {
     type: 'application/zip',
@@ -24,6 +19,126 @@ const createImageBlob = (label: string, format: string = 'png') =>
   new Blob([`Dummy image data for ${label}`], {
     type: `image/${format}`,
   });
+
+const toSnakeCase = (key: string) =>
+  key.replace(/([A-Z])/g, '_$1').toLowerCase();
+
+const recognisedOptionKeys = new Set(['page_numbers']);
+
+const recognisedMetadataKeys = new Map<string, string>([
+  ['title', 'title'],
+  ['author', 'author'],
+  ['subject', 'subject'],
+  ['description', 'description'],
+  ['language', 'language'],
+  ['revision', 'revision'],
+  ['last_modified_by', 'last_modified_by'],
+  ['lastmodifiedby', 'last_modified_by'],
+  ['created', 'created'],
+  ['modified', 'modified'],
+  ['keywords', 'keywords'],
+  ['keyword_list', 'keywords'],
+  ['keywordlist', 'keywords'],
+]);
+
+const normaliseMetadata = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const source = value as Record<string, unknown>;
+  const normalised: Record<string, unknown> = {};
+
+  Object.entries(source).forEach(([rawKey, rawValue]) => {
+    if (rawValue === undefined || rawValue === null) {
+      return;
+    }
+    const canonicalKey = recognisedMetadataKeys.get(toSnakeCase(rawKey));
+    if (!canonicalKey) {
+      return;
+    }
+
+    if (rawValue instanceof Date) {
+      normalised[canonicalKey] = rawValue.toISOString();
+    } else {
+      normalised[canonicalKey] = rawValue;
+    }
+  });
+
+  return Object.keys(normalised).length > 0 ? normalised : null;
+};
+
+const normalisePageNumbers = (value: unknown): number[] | null => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const asArray = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0)
+      : null;
+
+  if (!asArray || asArray.length === 0) {
+    return null;
+  }
+
+  const numeric = asArray.map((item) => {
+    const parsed = typeof item === 'number' ? item : Number.parseInt(String(item), 10);
+    if (Number.isNaN(parsed)) {
+      return Number.NaN;
+    }
+    return parsed;
+  });
+
+  if (numeric.some((value) => Number.isNaN(value))) {
+    return null;
+  }
+
+  return numeric.length > 0 ? numeric : null;
+};
+
+const preparePdfToDocxPayload = (
+  rawOptions?: any,
+): {
+  options: Record<string, unknown> | null;
+  metadata: Record<string, unknown> | null;
+} => {
+  if (!rawOptions || typeof rawOptions !== 'object') {
+    return { options: null, metadata: null };
+  }
+
+  const { metadata, ...rest } = rawOptions as Record<string, unknown>;
+
+  const normalisedOptions: Record<string, unknown> = {};
+
+  Object.entries(rest).forEach(([key, value]) => {
+    if (value === undefined || value === null) {
+      return;
+    }
+    const canonicalKey = toSnakeCase(key);
+    if (!recognisedOptionKeys.has(canonicalKey)) {
+      return;
+    }
+
+    if (canonicalKey === 'page_numbers') {
+      const numbers = normalisePageNumbers(value);
+      if (numbers && numbers.length > 0) {
+        normalisedOptions[canonicalKey] = numbers;
+      }
+    }
+  });
+
+  const normalisedMetadata = normaliseMetadata(metadata);
+
+  return {
+    options: Object.keys(normalisedOptions).length > 0 ? normalisedOptions : null,
+    metadata: normalisedMetadata,
+  };
+};
 
 const extractFilename = (header: string | null): string | undefined => {
   if (!header) {
@@ -293,8 +408,24 @@ export const convertPdfToDocx = async (file: File, options?: any) => {
     throw new Error('A PDF file is required for conversion');
   }
 
-  await delay(800);
-  return createDocxBlob('converted.docx');
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const payload = preparePdfToDocxPayload(options);
+  if (payload.options) {
+    formData.append('options', JSON.stringify(payload.options));
+  }
+  if (payload.metadata) {
+    formData.append('metadata', JSON.stringify(payload.metadata));
+  }
+
+  const result = await requestBinary('/convert/pdf-to-docx', formData);
+  if (!(result as any).filename) {
+    const name = file.name?.replace(/\.pdf$/i, '') || 'document';
+    (result as any).filename = `${name}.docx`;
+  }
+
+  return result;
 };
 
 // PDF page numbering operations
