@@ -29,6 +29,7 @@ foundation for the services that sit on top of it.
 - Flatten interactive form fields into readable DOCX tables with checkbox,
   dropdown, and signature placeholders.
 - Validate documents and query document information before operating on them.
+- Protect documents with passwords or remove encryption when authorised.
 
 ## Installation
 
@@ -43,10 +44,13 @@ from pathlib import Path
 
 from intellipdf import (
     compress_document,
+    is_document_encrypted,
     extract_document_pages,
     merge_documents,
+    protect_document,
     split_document,
     convert_document,
+    unprotect_document,
 )
 
 source = Path("document.pdf")
@@ -89,6 +93,11 @@ convert_document(doc, Path("primitives.docx"))
 # Streaming mode keeps memory usage predictable by processing PDF pages one at a
 # time. Disable it via `ConversionOptions(stream_pages=False)` if you need to
 # re-use intermediate page structures.
+# Protect a document with a password and later remove it with the correct key.
+secure = protect_document(source, Path("secure.pdf"), "s3cr3t")
+print(is_document_encrypted(secure))
+plain = unprotect_document(secure, Path("plain.pdf"), "s3cr3t")
+print(is_document_encrypted(plain))
 ```
 
 Set the environment variable `INTELLIPDF_SPLIT_OPTIMIZE=1` (or the more general

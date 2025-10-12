@@ -1,11 +1,11 @@
-"""Unified PDF processing toolkit exposing split, merge, compression, and PDF→DOCX helpers."""
+"""Unified PDF processing toolkit exposing split, merge, compression, PDF→DOCX and security helpers."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from . import compress, merge, pdf2docx, split
+from . import compress, merge, security,pdf2docx , split
 from .compress import (
     CompressionError,
     CompressionInfo,
@@ -27,6 +27,12 @@ from .merge import (
     validate_pdf as validate_merge_pdf,
     get_pdf_info as get_merge_info,
 )
+from .security import (
+    PdfSecurityError,
+    is_pdf_encrypted,
+    protect_pdf,
+    unprotect_pdf,
+)
 from .split import (
     extract_pages,
     split_pdf,
@@ -47,10 +53,17 @@ __all__ = [
     "merge",
     "split",
     "pdf2docx",
+    "security",
     "split_pdf",
     "extract_pages",
     "merge_pdfs",
     "compress_pdf",
+    "protect_pdf",
+    "unprotect_pdf",
+    "is_pdf_encrypted",
+    "protect_document",
+    "unprotect_document",
+    "is_document_encrypted",
     "get_split_info",
     "get_merge_info",
     "get_compression_info",
@@ -75,6 +88,7 @@ __all__ = [
     "ConversionMetadata",
     "ConversionResult",
     "convert_document",
+    "PdfSecurityError",
 ]
 
 
@@ -128,3 +142,30 @@ def convert_document(
     """Convenience wrapper for PDF → DOCX conversion."""
 
     return convert_pdf_to_docx(input, output, options=options, metadata=metadata)
+def protect_document(
+    input: str | Path,
+    output: str | Path,
+    password: str,
+    *,
+    owner_password: str | None = None,
+) -> Path:
+    """Convenience wrapper around :func:`security.protect_pdf`."""
+
+    return protect_pdf(
+        input,
+        output,
+        password,
+        owner_password=owner_password,
+    )
+
+
+def unprotect_document(input: str | Path, output: str | Path, password: str) -> Path:
+    """Convenience wrapper around :func:`security.unprotect_pdf`."""
+
+    return unprotect_pdf(input, output, password)
+
+
+def is_document_encrypted(path: str | Path) -> bool:
+    """Convenience wrapper around :func:`security.is_pdf_encrypted`."""
+
+    return is_pdf_encrypted(path)
