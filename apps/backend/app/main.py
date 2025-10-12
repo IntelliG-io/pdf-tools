@@ -52,6 +52,16 @@ def _flatten_ranges(ranges: Sequence[PageRange]) -> list[int]:
     return pages
 
 
+def _safe_filename(filename: str | None, default: str) -> str:
+    """Return a filesystem-safe filename derived from user input."""
+
+    if not filename:
+        return default
+
+    candidate = Path(filename).name
+    return candidate or default
+
+
 @app.get("/health", response_class=JSONResponse)
 async def health() -> dict[str, str]:
     """Lightweight health endpoint for uptime checks."""
@@ -82,7 +92,7 @@ async def merge_documents(
         if not contents:
             raise HTTPException(status_code=400, detail=f"File '{upload.filename}' is empty.")
 
-        filename = upload.filename or f"document_{index}.pdf"
+        filename = _safe_filename(upload.filename, f"document_{index}.pdf")
         file_path = temp_path / filename
         file_path.write_bytes(contents)
         stored_files.append(file_path)
@@ -118,7 +128,7 @@ async def extract_page_ranges(
 
     temp_dir = TemporaryDirectory()
     temp_path = Path(temp_dir.name)
-    input_path = temp_path / (file.filename or "document.pdf")
+    input_path = temp_path / _safe_filename(file.filename, "document.pdf")
     await _store_upload(file, input_path)
 
     try:
@@ -164,7 +174,7 @@ async def split_at_pages(
 
     temp_dir = TemporaryDirectory()
     temp_path = Path(temp_dir.name)
-    input_path = temp_path / (file.filename or "document.pdf")
+    input_path = temp_path / _safe_filename(file.filename, "document.pdf")
     await _store_upload(file, input_path)
 
     try:
@@ -235,7 +245,7 @@ async def split_every_n(
 
     temp_dir = TemporaryDirectory()
     temp_path = Path(temp_dir.name)
-    input_path = temp_path / (file.filename or "document.pdf")
+    input_path = temp_path / _safe_filename(file.filename, "document.pdf")
     await _store_upload(file, input_path)
 
     try:
@@ -285,7 +295,7 @@ async def extract_all_pages(
 
     temp_dir = TemporaryDirectory()
     temp_path = Path(temp_dir.name)
-    input_path = temp_path / (file.filename or "document.pdf")
+    input_path = temp_path / _safe_filename(file.filename, "document.pdf")
     await _store_upload(file, input_path)
 
     try:
