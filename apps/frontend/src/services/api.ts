@@ -32,22 +32,17 @@ const recognisedOptionKeys = new Set([
   'footnotes_as_endnotes',
 ]);
 
-const qualityPresets: Record<string, Record<string, boolean>> = {
+const qualityPresets: Record<string, Partial<Record<string, boolean>>> = {
   basic: {
     stream_pages: false,
     strip_whitespace: false,
     include_outline_toc: false,
     generate_toc_field: false,
   },
-  standard: {
-    stream_pages: true,
-    strip_whitespace: false,
-    include_outline_toc: false,
-    generate_toc_field: false,
-  },
+  standard: {},
   precise: {
     stream_pages: true,
-    strip_whitespace: false,
+    strip_whitespace: true,
     include_outline_toc: true,
     generate_toc_field: true,
   },
@@ -113,7 +108,11 @@ const preparePdfToDocxPayload = (
   if (typeof quality === 'string') {
     const preset = qualityPresets[quality.toLowerCase()];
     if (preset) {
-      Object.assign(normalisedOptions, preset);
+      Object.entries(preset).forEach(([key, value]) => {
+        if (value !== undefined) {
+          normalisedOptions[key] = value;
+        }
+      });
     }
   }
 

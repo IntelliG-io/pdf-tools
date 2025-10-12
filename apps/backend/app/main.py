@@ -38,14 +38,6 @@ from intellipdf.split.utils import PageRange, parse_page_ranges
 app = FastAPI(title="IntelliPDF API", version="0.2.0")
 DOCS_PREFIX = "/api"
 
-DEFAULT_CONVERSION_OPTION_VALUES: dict[str, object] = {
-    "strip_whitespace": False,
-    "stream_pages": False,
-    "include_outline_toc": False,
-    "generate_toc_field": False,
-}
-
-
 def _cleanup_temp_dir(background_tasks: BackgroundTasks, temp_dir: TemporaryDirectory) -> None:
     """Schedule ``temp_dir`` to be cleaned up after the response is sent."""
 
@@ -595,10 +587,9 @@ async def convert_pdf_to_docx_endpoint(
     input_path = temp_path / _safe_filename(file.filename, "document.pdf")
     await _store_upload(file, input_path)
 
-    conversion_option_kwargs = {
-        **DEFAULT_CONVERSION_OPTION_VALUES,
-        **_build_conversion_options(_parse_json_mapping(options, field_name="options")),
-    }
+    conversion_option_kwargs = _build_conversion_options(
+        _parse_json_mapping(options, field_name="options")
+    )
     conversion_options = ConversionOptions(**conversion_option_kwargs)
     conversion_metadata = _build_conversion_metadata(
         _parse_json_mapping(metadata, field_name="metadata")

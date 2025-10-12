@@ -64,10 +64,11 @@ def test_pdf_to_docx_applies_conservative_defaults(
     assert captured
 
     options = captured["options"]
-    assert options.strip_whitespace is False
-    assert options.stream_pages is False
-    assert options.include_outline_toc is False
-    assert options.generate_toc_field is False
+    assert options.strip_whitespace is True
+    assert options.stream_pages is True
+    assert options.include_outline_toc is True
+    assert options.generate_toc_field is True
+    assert options.footnotes_as_endnotes is False
 
 
 def test_pdf_to_docx_rejects_invalid_options(sample_pdf: Path) -> None:
