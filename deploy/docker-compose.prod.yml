@@ -1,0 +1,9 @@
+services:
+  backend:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE}
+    container_name: pdf-tools-backend-prod
+    restart: unless-stopped
+    environment:
+      - PYTHONPATH=/app
+    ports:
+      - "127.0.0.1:9000:8000"

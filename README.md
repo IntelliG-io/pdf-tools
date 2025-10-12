@@ -115,6 +115,77 @@ splitting.
 The repository root still includes a `pyproject.toml` so the library can be
 installed with `pip install .` if required.
 
+## Containerisation
+
+The backend service is now packaged as a Docker image so it can be run locally
+or in production with the same configuration. Build and run it with Docker
+Compose:
+
+```bash
+docker compose up --build
+```
+
+The command exposes the FastAPI app on `http://localhost:8000`. Hot reloading
+is not enabled inside the container yet, so use the existing `uvicorn`
+instructions in `apps/backend/README.md` for iterative development.
+
+## Deployment pipeline
+
+The repository ships with a GitHub Actions workflow (`.github/workflows/deploy.yml`)
+that builds the backend image and deploys it to a DigitalOcean droplet whenever
+changes land on the `main` or `dev` branches. The pipeline performs the
+following steps:
+
+1. Build a backend image from the monorepo Dockerfile and push it to the GitHub
+   Container Registry (GHCR) using tags derived from the branch name (for
+   example `production` for `main`, `dev` for the development branch).
+2. Connect to the droplet over SSH and run `docker compose` with a branch-aware
+   configuration so each environment is updated automatically.
+
+### One-time server preparation
+
+On the droplet, provision directories for both environments and copy the
+provided Compose files from `deploy/`:
+
+```bash
+sudo mkdir -p /opt/pdf-tools/prod /opt/pdf-tools/dev
+cd /opt/pdf-tools
+sudo cp ~/pdf-tools/deploy/docker-compose.prod.yml prod/docker-compose.yml
+sudo cp ~/pdf-tools/deploy/docker-compose.dev.yml dev/docker-compose.yml
+```
+
+Each Compose file expects a `BACKEND_IMAGE` environment variable. The workflow
+exports this automatically, but you can test locally by setting it manually:
+
+```bash
+BACKEND_IMAGE=ghcr.io/your-user/pdf-tools-backend:production   docker compose -f /opt/pdf-tools/prod/docker-compose.yml up -d
+```
+
+Expose the containers behind Nginx using the sample configuration in
+`deploy/nginx/pdfspoint.conf`. Update the upstream ports if you prefer different
+bindings (the defaults are `9000` for production, `9001` for development, and an
+optional `9002` placeholder for the legacy app). Remember to request TLS
+certificates—`certbot` can re-use this server block and expand it with HTTPS
+settings.
+
+### Required GitHub secrets
+
+Add the following secrets to the repository so the workflow can authenticate and
+log into the droplet:
+
+| Secret | Description |
+|--------|-------------|
+| `DEPLOY_SSH_KEY` | Private key that matches the droplet user’s public key. |
+| `DEPLOY_USER` | SSH user name (for example `root` or a dedicated deploy user). |
+| `DEV_HOST` | Hostname or IP address for the development deployment (can match the production IP). |
+| `PRODUCTION_HOST` | Hostname or IP address for the production deployment. |
+| `GHCR_USERNAME` | Account name with read access to the GHCR repository. |
+| `GHCR_PASSWORD` | Personal access token with the `read:packages` scope for GHCR. |
+
+With the secrets in place, merging to `main` updates `pdfspoint.com`, merging to
+`dev` updates `dev.pdfspoint.com`, and the legacy service can continue to run on
+`legacy.pdfspoint.com` until you retire it.
+
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).

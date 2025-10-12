@@ -1,0 +1,38 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Distribution / packaging
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Environment files
+.env
+.env.*
+*.env
+
+# Editor / OS files
+.DS_Store
+.vscode/
+.idea/
+
+# Git
+.git
+.gitignore
+
+# Tests and docs that aren't needed in the container
+/tests/
+/docs/
+
+# Node artifacts
+apps/frontend/node_modules/
+apps/frontend/.next/
+apps/frontend/build/
+
+# Bytecode caches in packages
+packages/**/__pycache__/
