@@ -19,6 +19,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -429,7 +430,7 @@ const SplitPDF: React.FC = () => {
                               <label
                                 htmlFor={`split-mode-${mode}`}
                                 className={cn(
-                                  "relative flex h-full cursor-pointer flex-col justify-between rounded-lg border p-4 text-left transition-colors",
+                                  "flex h-full cursor-pointer flex-col gap-4 rounded-lg border p-4 text-left transition-colors",
                                   "bg-background hover:border-primary/40 hover:bg-primary/5",
                                   splitMode === mode && "border-primary bg-primary/5 shadow-sm ring-2 ring-primary/20",
                                 )}
@@ -438,14 +439,18 @@ const SplitPDF: React.FC = () => {
                                   <div className="rounded-md bg-primary/10 p-2 text-primary">
                                     <Icon className="h-5 w-5" />
                                   </div>
-                                  <div className="space-y-1">
+                                  <div className="flex flex-col gap-1">
                                     <p className="font-medium leading-none">{method.title}</p>
-                                    <p className="text-xs text-muted-foreground">{method.description}</p>
                                   </div>
                                 </div>
-                                <p className="mt-3 text-xs text-muted-foreground">{method.hint}</p>
+                                <p className="text-xs text-muted-foreground">{method.hint}</p>
                                 {splitMode === mode && (
-                                  <span className="absolute right-4 top-4 text-xs font-medium text-primary">Selected</span>
+                                  <Badge
+                                    variant="outline"
+                                    className="mt-auto w-fit border-primary/40 bg-primary/10 text-primary"
+                                  >
+                                    Selected
+                                  </Badge>
                                 )}
                               </label>
                             </div>
