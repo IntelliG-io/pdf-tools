@@ -23,6 +23,79 @@ const createImageBlob = (label: string, format: string = 'png') =>
 const toSnakeCase = (key: string) =>
   key.replace(/([A-Z])/g, '_$1').toLowerCase();
 
+const recognisedOptionKeys = new Set([
+  'page_numbers',
+  'stream_pages',
+  'strip_whitespace',
+  'include_outline_toc',
+  'generate_toc_field',
+  'footnotes_as_endnotes',
+]);
+
+const qualityPresets: Record<string, Record<string, boolean>> = {
+  basic: {
+    stream_pages: false,
+    strip_whitespace: false,
+    include_outline_toc: false,
+    generate_toc_field: false,
+  },
+  standard: {
+    stream_pages: true,
+    strip_whitespace: false,
+    include_outline_toc: false,
+    generate_toc_field: false,
+  },
+  precise: {
+    stream_pages: true,
+    strip_whitespace: false,
+    include_outline_toc: true,
+    generate_toc_field: true,
+  },
+};
+
+const recognisedMetadataKeys = new Map<string, string>([
+  ['title', 'title'],
+  ['author', 'author'],
+  ['subject', 'subject'],
+  ['description', 'description'],
+  ['language', 'language'],
+  ['revision', 'revision'],
+  ['last_modified_by', 'last_modified_by'],
+  ['lastmodifiedby', 'last_modified_by'],
+  ['created', 'created'],
+  ['modified', 'modified'],
+  ['keywords', 'keywords'],
+  ['keyword_list', 'keywords'],
+  ['keywordlist', 'keywords'],
+]);
+
+const normaliseMetadata = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const source = value as Record<string, unknown>;
+  const normalised: Record<string, unknown> = {};
+
+  Object.entries(source).forEach(([rawKey, rawValue]) => {
+    if (rawValue === undefined || rawValue === null) {
+      return;
+    }
+    const canonicalKey = recognisedMetadataKeys.get(toSnakeCase(rawKey));
+    if (!canonicalKey) {
+      return;
+    }
+
+    if (rawValue instanceof Date) {
+      normalised[canonicalKey] = rawValue.toISOString();
+    } else {
+      normalised[canonicalKey] = rawValue;
+    }
+  });
+
+  return Object.keys(normalised).length > 0 ? normalised : null;
+};
+
 const preparePdfToDocxPayload = (
   rawOptions?: any,
 ): {
@@ -33,29 +106,34 @@ const preparePdfToDocxPayload = (
     return { options: null, metadata: null };
   }
 
-  const { metadata, ...rest } = rawOptions as Record<string, unknown>;
+  const { metadata, quality, ...rest } = rawOptions as Record<string, unknown>;
 
   const normalisedOptions: Record<string, unknown> = {};
+
+  if (typeof quality === 'string') {
+    const preset = qualityPresets[quality.toLowerCase()];
+    if (preset) {
+      Object.assign(normalisedOptions, preset);
+    }
+  }
+
   Object.entries(rest).forEach(([key, value]) => {
     if (value === undefined || value === null) {
       return;
     }
-    const snakeKey = toSnakeCase(key);
-    normalisedOptions[snakeKey] = value;
+    const canonicalKey = toSnakeCase(key);
+    if (!recognisedOptionKeys.has(canonicalKey)) {
+      return;
+    }
+
+    normalisedOptions[canonicalKey] = value;
   });
 
-  const normalisedMetadata =
-    metadata && typeof metadata === 'object'
-      ? Object.fromEntries(
-          Object.entries(metadata as Record<string, unknown>).filter(
-            ([, value]) => value !== undefined && value !== null,
-          ),
-        )
-      : null;
+  const normalisedMetadata = normaliseMetadata(metadata);
 
   return {
     options: Object.keys(normalisedOptions).length > 0 ? normalisedOptions : null,
-    metadata: normalisedMetadata && Object.keys(normalisedMetadata).length > 0 ? normalisedMetadata : null,
+    metadata: normalisedMetadata,
   };
 };
 

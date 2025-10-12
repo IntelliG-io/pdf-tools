@@ -38,6 +38,13 @@ from intellipdf.split.utils import PageRange, parse_page_ranges
 app = FastAPI(title="IntelliPDF API", version="0.2.0")
 DOCS_PREFIX = "/api"
 
+DEFAULT_CONVERSION_OPTION_VALUES: dict[str, object] = {
+    "strip_whitespace": False,
+    "stream_pages": False,
+    "include_outline_toc": False,
+    "generate_toc_field": False,
+}
+
 
 def _cleanup_temp_dir(background_tasks: BackgroundTasks, temp_dir: TemporaryDirectory) -> None:
     """Schedule ``temp_dir`` to be cleaned up after the response is sent."""
@@ -149,19 +156,17 @@ def _parse_page_numbers(value: object) -> list[int]:
     return parsed
 
 
-def _build_conversion_options(payload: dict[str, object] | None) -> ConversionOptions | None:
-    """Translate user supplied options into :class:`ConversionOptions`."""
+def _build_conversion_options(payload: dict[str, object] | None) -> dict[str, object]:
+    """Translate user supplied option overrides into ``ConversionOptions`` kwargs."""
 
     if not payload:
-        return None
+        return {}
 
-    options = ConversionOptions()
-    updated = False
+    overrides: dict[str, object] = {}
 
     page_numbers = payload.get("page_numbers") or payload.get("pageNumbers")
     if page_numbers is not None:
-        options.page_numbers = _parse_page_numbers(page_numbers)
-        updated = True
+        overrides["page_numbers"] = _parse_page_numbers(page_numbers)
 
     bool_fields = {
         "strip_whitespace": "stripWhitespace",
@@ -177,10 +182,9 @@ def _build_conversion_options(payload: dict[str, object] | None) -> ConversionOp
             raw_value = payload.get(alias)
         if raw_value is None:
             continue
-        setattr(options, canonical, _coerce_bool(raw_value, field=canonical))
-        updated = True
+        overrides[canonical] = _coerce_bool(raw_value, field=canonical)
 
-    return options if updated else None
+    return overrides
 
 
 def _parse_datetime(value: object, *, field: str) -> datetime:
@@ -591,9 +595,11 @@ async def convert_pdf_to_docx_endpoint(
     input_path = temp_path / _safe_filename(file.filename, "document.pdf")
     await _store_upload(file, input_path)
 
-    conversion_options = _build_conversion_options(
-        _parse_json_mapping(options, field_name="options")
-    )
+    conversion_option_kwargs = {
+        **DEFAULT_CONVERSION_OPTION_VALUES,
+        **_build_conversion_options(_parse_json_mapping(options, field_name="options")),
+    }
+    conversion_options = ConversionOptions(**conversion_option_kwargs)
     conversion_metadata = _build_conversion_metadata(
         _parse_json_mapping(metadata, field_name="metadata")
     )
