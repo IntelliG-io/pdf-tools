@@ -26,12 +26,12 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from intellipdf import (
     ConversionMetadata,
     ConversionOptions,
-    convert_pdf_to_docx,
     extract_pages,
     get_split_info,
     merge_pdfs,
     split_pdf,
 )
+from intellipdf.pdf2docx.converter import PdfToDocxConverter
 from intellipdf.split.exceptions import IntelliPDFSplitError, InvalidPageRangeError
 from intellipdf.split.utils import PageRange, parse_page_ranges
 
@@ -103,23 +103,6 @@ def _parse_json_mapping(raw_value: str | None, *, field_name: str) -> dict[str, 
     return payload
 
 
-def _coerce_bool(value: object, *, field: str) -> bool:
-    """Convert common truthy/falsey representations into a boolean."""
-
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"true", "1", "yes", "y", "on"}:
-            return True
-        if lowered in {"false", "0", "no", "n", "off"}:
-            return False
-
-    raise HTTPException(status_code=400, detail=f"'{field}' must be a boolean value.")
-
-
 def _parse_page_numbers(value: object) -> list[int]:
     """Normalise page number selections to zero-based indices."""
 
@@ -148,35 +131,17 @@ def _parse_page_numbers(value: object) -> list[int]:
     return parsed
 
 
-def _build_conversion_options(payload: dict[str, object] | None) -> dict[str, object]:
-    """Translate user supplied option overrides into ``ConversionOptions`` kwargs."""
+def _extract_page_selection(payload: dict[str, object] | None) -> list[int] | None:
+    """Extract an optional list of page numbers from ``payload``."""
 
     if not payload:
-        return {}
-
-    overrides: dict[str, object] = {}
+        return None
 
     page_numbers = payload.get("page_numbers") or payload.get("pageNumbers")
-    if page_numbers is not None:
-        overrides["page_numbers"] = _parse_page_numbers(page_numbers)
+    if page_numbers is None:
+        return None
 
-    bool_fields = {
-        "strip_whitespace": "stripWhitespace",
-        "stream_pages": "streamPages",
-        "include_outline_toc": "includeOutlineToc",
-        "generate_toc_field": "generateTocField",
-        "footnotes_as_endnotes": "footnotesAsEndnotes",
-    }
-
-    for canonical, alias in bool_fields.items():
-        raw_value = payload.get(canonical)
-        if raw_value is None:
-            raw_value = payload.get(alias)
-        if raw_value is None:
-            continue
-        overrides[canonical] = _coerce_bool(raw_value, field=canonical)
-
-    return overrides
+    return _parse_page_numbers(page_numbers)
 
 
 def _parse_datetime(value: object, *, field: str) -> datetime:
@@ -587,10 +552,7 @@ async def convert_pdf_to_docx_endpoint(
     input_path = temp_path / _safe_filename(file.filename, "document.pdf")
     await _store_upload(file, input_path)
 
-    conversion_option_kwargs = _build_conversion_options(
-        _parse_json_mapping(options, field_name="options")
-    )
-    conversion_options = ConversionOptions(**conversion_option_kwargs)
+    page_numbers = _extract_page_selection(_parse_json_mapping(options, field_name="options"))
     conversion_metadata = _build_conversion_metadata(
         _parse_json_mapping(metadata, field_name="metadata")
     )
@@ -600,11 +562,11 @@ async def convert_pdf_to_docx_endpoint(
 
     try:
         result = await run_in_threadpool(
-            convert_pdf_to_docx,
+            _perform_pdf_to_docx_conversion,
             input_path,
             output_path,
-            options=conversion_options,
-            metadata=conversion_metadata,
+            page_numbers,
+            conversion_metadata,
         )
     except HTTPException:
         raise
@@ -631,3 +593,37 @@ async def convert_pdf_to_docx_endpoint(
 
 
 __all__ = ["app"]
+
+
+def _perform_pdf_to_docx_conversion(
+    input_path: Path,
+    output_path: Path,
+    page_numbers: list[int] | None,
+    conversion_metadata: ConversionMetadata | None,
+):
+    """Convert ``input_path`` PDF to DOCX using a simple, well-defined pipeline.
+
+    The conversion is broken into explicit steps so we can reason about the behaviour:
+
+    1. Build a :class:`ConversionOptions` instance with all advanced features disabled
+       to avoid unpredictable transformations.
+    2. Instantiate :class:`PdfToDocxConverter` with those options so the pdf2docx
+       engine handles the heavy lifting.
+    3. Run ``convert`` with the prepared metadata and return the resulting stats.
+    """
+
+    options = ConversionOptions(
+        page_numbers=page_numbers,
+        strip_whitespace=False,
+        stream_pages=False,
+        include_outline_toc=False,
+        generate_toc_field=False,
+        footnotes_as_endnotes=False,
+    )
+
+    converter = PdfToDocxConverter(options)
+    return converter.convert(
+        input_path,
+        output_path,
+        metadata=conversion_metadata,
+    )

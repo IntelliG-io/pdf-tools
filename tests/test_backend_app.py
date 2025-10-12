@@ -5,6 +5,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from intellipdf import ConversionMetadata
+
 from apps.backend.app.main import app
 
 
@@ -13,7 +15,7 @@ client = TestClient(app)
 
 def test_pdf_to_docx_conversion_endpoint(sample_pdf: Path) -> None:
     payload = {
-        "options": json.dumps({"pageNumbers": [1, 3], "streamPages": False}),
+        "options": json.dumps({"pageNumbers": [1, 3]}),
     }
     files = {
         "file": ("sample.pdf", sample_pdf.read_bytes(), "application/pdf"),
@@ -32,42 +34,62 @@ def test_pdf_to_docx_conversion_endpoint(sample_pdf: Path) -> None:
     assert response.content[:2] == b"PK"
 
 
-def test_pdf_to_docx_applies_conservative_defaults(
-    monkeypatch, sample_pdf: Path
+def test_perform_pdf_to_docx_conversion_uses_simple_pipeline(
+    monkeypatch, tmp_path: Path
 ) -> None:
+    from apps.backend.app import main
+
     captured: dict[str, object] = {}
 
-    def fake_convert(input_document, output_path, *, options, metadata):
-        captured["options"] = options
-        output = Path(output_path)
-        output.write_bytes(b"PK\x03\x04mock")
+    class DummyResult:
+        def __init__(self, output_path: Path) -> None:
+            self.output_path = output_path
+            self.page_count = 1
+            self.paragraph_count = 1
+            self.word_count = 1
+            self.line_count = 1
 
-        class Result:
-            def __init__(self, output_path: Path) -> None:
-                self.output_path = output_path
-                self.page_count = 1
-                self.paragraph_count = 1
-                self.word_count = 1
-                self.line_count = 1
+    class DummyConverter:
+        def __init__(self, options) -> None:  # pragma: no cover - simple wiring
+            captured["options"] = options
 
-        return Result(output)
+        def convert(self, input_document, output_path, *, metadata):
+            captured["input_document"] = Path(input_document)
+            captured["output_path"] = Path(output_path)
+            captured["metadata"] = metadata
+            destination = Path(output_path)
+            destination.write_bytes(b"PK\x03\x04mock")
+            return DummyResult(destination)
 
-    monkeypatch.setattr("apps.backend.app.main.convert_pdf_to_docx", fake_convert)
+    monkeypatch.setattr(
+        "apps.backend.app.main.PdfToDocxConverter",
+        DummyConverter,
+    )
 
-    files = {
-        "file": ("sample.pdf", sample_pdf.read_bytes(), "application/pdf"),
-    }
+    input_path = tmp_path / "source.pdf"
+    output_path = tmp_path / "result.docx"
+    input_path.write_bytes(b"%PDF")
 
-    response = client.post("/convert/pdf-to-docx", data={}, files=files)
+    metadata = ConversionMetadata(title="Example")
 
-    assert response.status_code == 200
-    assert captured
+    result = main._perform_pdf_to_docx_conversion(
+        input_path,
+        output_path,
+        [0, 2],
+        metadata,
+    )
+
+    assert isinstance(result, DummyResult)
+    assert captured["input_document"] == input_path
+    assert captured["output_path"] == output_path
+    assert captured["metadata"] is metadata
 
     options = captured["options"]
-    assert options.strip_whitespace is True
-    assert options.stream_pages is True
-    assert options.include_outline_toc is True
-    assert options.generate_toc_field is True
+    assert options.page_numbers == [0, 2]
+    assert options.strip_whitespace is False
+    assert options.stream_pages is False
+    assert options.include_outline_toc is False
+    assert options.generate_toc_field is False
     assert options.footnotes_as_endnotes is False
 
 

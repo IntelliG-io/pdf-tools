@@ -23,30 +23,7 @@ const createImageBlob = (label: string, format: string = 'png') =>
 const toSnakeCase = (key: string) =>
   key.replace(/([A-Z])/g, '_$1').toLowerCase();
 
-const recognisedOptionKeys = new Set([
-  'page_numbers',
-  'stream_pages',
-  'strip_whitespace',
-  'include_outline_toc',
-  'generate_toc_field',
-  'footnotes_as_endnotes',
-]);
-
-const qualityPresets: Record<string, Partial<Record<string, boolean>>> = {
-  basic: {
-    stream_pages: false,
-    strip_whitespace: false,
-    include_outline_toc: false,
-    generate_toc_field: false,
-  },
-  standard: {},
-  precise: {
-    stream_pages: true,
-    strip_whitespace: true,
-    include_outline_toc: true,
-    generate_toc_field: true,
-  },
-};
+const recognisedOptionKeys = new Set(['page_numbers']);
 
 const recognisedMetadataKeys = new Map<string, string>([
   ['title', 'title'],
@@ -91,6 +68,39 @@ const normaliseMetadata = (value: unknown): Record<string, unknown> | null => {
   return Object.keys(normalised).length > 0 ? normalised : null;
 };
 
+const normalisePageNumbers = (value: unknown): number[] | null => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const asArray = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0)
+      : null;
+
+  if (!asArray || asArray.length === 0) {
+    return null;
+  }
+
+  const numeric = asArray.map((item) => {
+    const parsed = typeof item === 'number' ? item : Number.parseInt(String(item), 10);
+    if (Number.isNaN(parsed)) {
+      return Number.NaN;
+    }
+    return parsed;
+  });
+
+  if (numeric.some((value) => Number.isNaN(value))) {
+    return null;
+  }
+
+  return numeric.length > 0 ? numeric : null;
+};
+
 const preparePdfToDocxPayload = (
   rawOptions?: any,
 ): {
@@ -101,20 +111,9 @@ const preparePdfToDocxPayload = (
     return { options: null, metadata: null };
   }
 
-  const { metadata, quality, ...rest } = rawOptions as Record<string, unknown>;
+  const { metadata, ...rest } = rawOptions as Record<string, unknown>;
 
   const normalisedOptions: Record<string, unknown> = {};
-
-  if (typeof quality === 'string') {
-    const preset = qualityPresets[quality.toLowerCase()];
-    if (preset) {
-      Object.entries(preset).forEach(([key, value]) => {
-        if (value !== undefined) {
-          normalisedOptions[key] = value;
-        }
-      });
-    }
-  }
 
   Object.entries(rest).forEach(([key, value]) => {
     if (value === undefined || value === null) {
@@ -125,7 +124,12 @@ const preparePdfToDocxPayload = (
       return;
     }
 
-    normalisedOptions[canonicalKey] = value;
+    if (canonicalKey === 'page_numbers') {
+      const numbers = normalisePageNumbers(value);
+      if (numbers && numbers.length > 0) {
+        normalisedOptions[canonicalKey] = numbers;
+      }
+    }
   });
 
   const normalisedMetadata = normaliseMetadata(metadata);
