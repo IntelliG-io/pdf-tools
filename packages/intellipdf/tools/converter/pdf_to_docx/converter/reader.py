@@ -544,91 +544,201 @@ def _outline_node_from_entry(
     )
 
 
-def capture_text_fragments(page: DictionaryObject) -> list[CapturedText]:
+def capture_text_fragments(page: DictionaryObject, reader: PdfReader) -> list[CapturedText]:
     fragments: list[CapturedText] = []
     font_maps = font_translation_maps(page)
+    try:
+        content = ContentStream(page.get_contents(), reader)
+    except Exception:
+        return []
 
-    def visitor(
-        text: str,
-        cm: list[float] | None,
-        tm: list[float] | None,
-        font_dict: DictionaryObject | None,
-        font_size: float,
-        *_: object,
-    ) -> None:
-        if not text:
+    resources = page.get(NameObject("/Resources"))
+    fonts_dict = None
+    if isinstance(resources, DictionaryObject):
+        fonts_dict = resources.get(NameObject("/Font"))
+
+    def _rgb_tuple_to_hex(color: tuple[float, float, float]) -> str:
+        r = int(round(max(0.0, min(color[0], 1.0)) * 255))
+        g = int(round(max(0.0, min(color[1], 1.0)) * 255))
+        b = int(round(max(0.0, min(color[2], 1.0)) * 255))
+        return f"{r:02X}{g:02X}{b:02X}"
+
+    matrix_stack: list[tuple[float, float, float, float, float, float]] = [
+        (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    ]
+    text_matrix: tuple[float, float, float, float, float, float] | None = None
+    line_matrix: tuple[float, float, float, float, float, float] | None = None
+    current_font_ref: NameObject | None = None
+    current_font_size: float | None = None
+    current_fill_color: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    def _resolve_font(n: NameObject | None) -> DictionaryObject | None:
+        if n is None or not isinstance(fonts_dict, DictionaryObject):
+            return None
+        try:
+            ref = fonts_dict.get(n)
+            if isinstance(ref, IndirectObject):
+                return ref.get_object()
+            if isinstance(ref, DictionaryObject):
+                return ref
+        except Exception:
+            return None
+        return None
+
+    def _emit_text(raw: str) -> None:
+        nonlocal text_matrix, current_font_ref, current_font_size
+        if not raw:
             return
-        # Compute transformed position and effective font size using combined matrix
-        # Build 6-element matrices for cm and tm where available
-        cm6: tuple[float, float, float, float, float, float] | None = None
-        tm6: tuple[float, float, float, float, float, float] | None = None
-        try:
-            if cm and len(cm) >= 6:
-                cm6 = (float(cm[0]), float(cm[1]), float(cm[2]), float(cm[3]), float(cm[4]), float(cm[5]))
-        except Exception:
-            cm6 = None
-        try:
-            if tm and len(tm) >= 6:
-                tm6 = (float(tm[0]), float(tm[1]), float(tm[2]), float(tm[3]), float(tm[4]), float(tm[5]))
-        except Exception:
-            tm6 = None
-        combined: tuple[float, float, float, float, float, float]
-        if cm6 and tm6:
-            combined = _matrix_multiply(cm6, tm6)
-        elif tm6:
-            combined = tm6
-        elif cm6:
-            combined = cm6
-        else:
-            combined = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+        tm = text_matrix or (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+        combined = _matrix_multiply(matrix_stack[-1], tm)
         x, y = _matrix_apply(combined, 0.0, 0.0)
+        font_obj = _resolve_font(current_font_ref)
         base_font = None
-        resolved_font: DictionaryObject | None = None
-        if font_dict is not None:
-            try:
-                resolved_font = (
-                    font_dict.get_object() if isinstance(font_dict, IndirectObject) else font_dict
-                )
-            except Exception:
-                resolved_font = font_dict if isinstance(font_dict, DictionaryObject) else None
-        base_font_obj = None
-        if isinstance(resolved_font, DictionaryObject):
-            base_font_obj = resolved_font.get(NameObject("/BaseFont"))
-            mapping_entry = font_maps.get(id(resolved_font))
+        if isinstance(font_obj, DictionaryObject):
+            base_font_obj = font_obj.get(NameObject("/BaseFont"))
+            if base_font_obj is not None:
+                base_font = str(base_font_obj)
+                if base_font.startswith("/"):
+                    base_font = base_font[1:]
+            mapping_entry = font_maps.get(id(font_obj))
             if mapping_entry is not None:
                 mapping, max_key_length = mapping_entry
-                text = apply_translation_map(text, mapping, max_key_length)
-        if base_font_obj is None and isinstance(font_dict, DictionaryObject):
-            base_font_obj = font_dict.get(NameObject("/BaseFont"))
-        if base_font_obj is not None:
-            base_font = str(base_font_obj)
-            if base_font.startswith("/"):
-                base_font = base_font[1:]
+                raw = apply_translation_map(raw, mapping, max_key_length)
         vertical = False
-        if _is_vertical_matrix(tm) and is_east_asian_text(text):
+        if _is_vertical_matrix(list(tm)) and is_east_asian_text(raw):
             vertical = True
-
-        # Compute effective font size from combined matrix scale
         a, b, c, d, _e, _f = combined
         try:
             sx = (a * a + b * b) ** 0.5
             sy = (c * c + d * d) ** 0.5
             scale = sy if vertical and sy > 0 else sx if sx > 0 else max(sx, sy)
-            eff_font_size = float(font_size) * scale if font_size else None
+            eff_font_size = float(current_font_size) * scale if current_font_size else None
         except Exception:
-            eff_font_size = float(font_size) if font_size else None
+            eff_font_size = float(current_font_size) if current_font_size else None
+        color_hex = _rgb_tuple_to_hex(current_fill_color)
         fragments.append(
             CapturedText(
-                text=text,
+                text=raw,
                 x=float(x),
                 y=float(y),
                 font_name=str(base_font) if base_font is not None else None,
                 font_size=eff_font_size,
                 vertical=vertical,
+                color=color_hex,
             )
         )
 
-    page.extract_text(visitor_text=visitor)
+    operations = getattr(content, "operations", [])
+    for operands, operator in operations:
+        op = operator
+        if op == b"q":
+            matrix_stack.append(matrix_stack[-1])
+        elif op == b"Q":
+            if len(matrix_stack) > 1:
+                matrix_stack.pop()
+        elif op == b"cm" and len(operands) == 6:
+            try:
+                matrix = tuple(float(value) for value in operands)
+                matrix_stack[-1] = _matrix_multiply(matrix_stack[-1], matrix)  
+            except Exception:
+                pass
+        elif op == b"BT":
+            text_matrix = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+            line_matrix = text_matrix
+        elif op == b"ET":
+            text_matrix = None
+            line_matrix = None
+        elif op == b"Tf" and len(operands) >= 2:
+            try:
+                current_font_ref = operands[0]
+                current_font_size = float(operands[1])
+            except Exception:
+                current_font_ref = None
+                current_font_size = None
+        elif op == b"Tm" and len(operands) >= 6:
+            try:
+                tm = tuple(float(operands[i]) for i in range(6))
+                text_matrix = tm
+                line_matrix = tm
+            except Exception:
+                pass
+        elif op in {b"Td", b"TD"} and len(operands) >= 2:
+            if line_matrix is None:
+                continue
+            try:
+                tx = float(operands[0])
+                ty = float(operands[1])
+                translate = (1.0, 0.0, 0.0, 1.0, tx, ty)
+                line_matrix = _matrix_multiply(line_matrix, translate)
+                text_matrix = line_matrix
+            except Exception:
+                pass
+        elif op == b"T*":
+            if line_matrix is None:
+                continue
+            try:
+                ty = -1.2 * (current_font_size or 12.0)
+                translate = (1.0, 0.0, 0.0, 1.0, 0.0, ty)
+                line_matrix = _matrix_multiply(line_matrix, translate)
+                text_matrix = line_matrix
+            except Exception:
+                pass
+        elif op == b"Tj" and operands:
+            s = operands[0]
+            try:
+                raw = s if isinstance(s, str) else s.decode("latin1", "ignore")
+            except Exception:
+                raw = str(s)
+            _emit_text(raw)
+        elif op == b"TJ" and operands:
+            arr = operands[0]
+            parts: list[str] = []
+            for item in arr:
+                if isinstance(item, (bytes, bytearray)):
+                    try:
+                        parts.append(item.decode("latin1", "ignore"))
+                    except Exception:
+                        parts.append(str(item))
+                elif isinstance(item, str):
+                    parts.append(item)
+            if parts:
+                _emit_text("".join(parts))
+        elif op in {b"rg", b"sc", b"scn"} and len(operands) >= 3:
+            try:
+                r = float(operands[0])
+                g = float(operands[1])
+                b = float(operands[2])
+                maxv = max(r, g, b)
+                if maxv > 1.0:
+                    r /= maxv
+                    g /= maxv
+                    b /= maxv
+                current_fill_color = (max(0.0, min(r, 1.0)), max(0.0, min(g, 1.0)), max(0.0, min(b, 1.0)))
+            except Exception:
+                pass
+        elif op == b"g" and operands:
+            try:
+                v = float(operands[0])
+                if v > 1.0:
+                    v = 1.0
+                if v < 0.0:
+                    v = 0.0
+                current_fill_color = (v, v, v)
+            except Exception:
+                pass
+        elif op == b"k" and len(operands) >= 4:
+            try:
+                c = float(operands[0])
+                m = float(operands[1])
+                yv = float(operands[2])
+                kv = float(operands[3])
+                r = 1.0 - min(1.0, c + kv)
+                g = 1.0 - min(1.0, m + kv)
+                b = 1.0 - min(1.0, yv + kv)
+                current_fill_color = (r, g, b)
+            except Exception:
+                pass
+
     return fragments
 
 
@@ -840,7 +950,7 @@ def page_from_reader(
     strip_whitespace: bool,
     reader: PdfReader,
 ) -> Page:
-    captured = capture_text_fragments(page)
+    captured = capture_text_fragments(page, reader)
     text_blocks = text_fragments_to_blocks(
         captured,
         page_width=float(page.mediabox.width),

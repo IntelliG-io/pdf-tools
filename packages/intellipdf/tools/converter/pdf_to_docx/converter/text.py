@@ -44,6 +44,7 @@ class CapturedText:
     font_name: str | None
     font_size: float | None
     vertical: bool = False
+    color: str | None = None
 
 
 def normalise_text_content(text: str, *, strip: bool) -> str:
@@ -189,6 +190,7 @@ def text_fragments_to_blocks(
             # round to nearest 0.5pt to smooth tiny variations
             font_size = round(m * 2) / 2.0
         font_name = next((item.font_name for item in line if item.font_name), None)
+        color = next((item.color for item in line if getattr(item, "color", None)), None)
         block_height = font_size or 12.0
         bold, italic, underline = font_traits(font_name)
         text_language = infer_language(combined)
@@ -211,7 +213,7 @@ def text_fragments_to_blocks(
                 bold=bold,
                 italic=italic,
                 underline=underline,
-                color="000000",
+                color=color,
                 rtl=rtl,
                 language=text_language,
                 superscript=superscript,
@@ -244,6 +246,7 @@ def text_fragments_to_blocks(
             m = median(sizes)
             font_size = round(m * 2) / 2.0
         font_name = next((item.font_name for item in column if item.font_name), None)
+        color = next((item.color for item in column if getattr(item, "color", None)), None)
         bold, italic, underline = font_traits(font_name)
         text_language = infer_language(combined)
         rtl = is_rtl_text(combined)
@@ -267,7 +270,7 @@ def text_fragments_to_blocks(
                 bold=bold,
                 italic=italic,
                 underline=underline,
-                color="000000",
+                color=color,
                 rtl=rtl,
                 language=text_language,
                 superscript=False,
