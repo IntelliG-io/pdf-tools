@@ -1,11 +1,11 @@
-"""Unified PDF processing toolkit exposing split, merge, compression, and security helpers."""
+"""Unified PDF processing toolkit exposing split, merge, compression, PDF→DOCX and security helpers."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from . import compress, merge, security, split
+from . import compress, merge, security,pdf2docx , split
 from .compress import (
     CompressionError,
     CompressionInfo,
@@ -40,11 +40,19 @@ from .split import (
     get_pdf_info as get_split_info,
 )
 from .split.optimizers import optimize_pdf as optimize_split_pdf
+from .pdf2docx import (
+    ConversionMetadata,
+    ConversionOptions,
+    ConversionResult,
+    PdfToDocxConverter,
+    convert_pdf_to_docx,
+)
 
 __all__ = [
     "compress",
     "merge",
     "split",
+    "pdf2docx",
     "security",
     "split_pdf",
     "extract_pages",
@@ -74,6 +82,12 @@ __all__ = [
     "PdfValidationError",
     "PdfOptimizationError",
     "PDFInfo",
+    "convert_pdf_to_docx",
+    "PdfToDocxConverter",
+    "ConversionOptions",
+    "ConversionMetadata",
+    "ConversionResult",
+    "convert_document",
     "PdfSecurityError",
 ]
 
@@ -118,6 +132,16 @@ def compress_document(
     return compress_pdf(input, output, level=level)
 
 
+def convert_document(
+    input: str | Path | pdf2docx.PdfDocument,
+    output: str | Path | None = None,
+    *,
+    options: ConversionOptions | None = None,
+    metadata: ConversionMetadata | None = None,
+) -> ConversionResult:
+    """Convenience wrapper for PDF → DOCX conversion."""
+
+    return convert_pdf_to_docx(input, output, options=options, metadata=metadata)
 def protect_document(
     input: str | Path,
     output: str | Path,
