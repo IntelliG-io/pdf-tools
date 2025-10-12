@@ -8,7 +8,7 @@ from typing import Iterable, List, Sequence
 from zipfile import ZipFile
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from intellipdf import extract_pages, get_split_info, merge_pdfs, split_pdf
 from intellipdf.split.exceptions import IntelliPDFSplitError, InvalidPageRangeError
