@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from json import JSONDecodeError
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Iterable, List, Sequence
@@ -103,6 +105,14 @@ async def prefixed_swagger_ui(request: Request) -> HTMLResponse:
 async def merge_documents(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(..., description="PDF files to merge"),
+    document_info: str | None = Form(
+        None,
+        description="Optional JSON encoded metadata to apply to the merged PDF.",
+    ),
+    add_bookmarks: bool = Form(
+        False,
+        description="When true, create bookmarks for each merged document.",
+    ),
 ) -> FileResponse:
     """Merge multiple PDF uploads into a single document.
 
@@ -130,8 +140,33 @@ async def merge_documents(
 
     output_path = temp_path / "merged.pdf"
 
+    metadata_overrides: dict[str, object] | None = None
+    if document_info:
+        try:
+            parsed_info = json.loads(document_info)
+        except JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="document_info must be valid JSON.") from exc
+
+        if not isinstance(parsed_info, dict):
+            raise HTTPException(status_code=400, detail="document_info must be a JSON object.")
+
+        metadata_overrides = {
+            str(key): value
+            for key, value in parsed_info.items()
+            if value is not None
+        }
+
+    bookmark_titles: list[str] | None = None
+    if add_bookmarks:
+        bookmark_titles = [path.stem or f"Document {index}" for index, path in enumerate(stored_files, start=1)]
+
     try:
-        merge_pdfs(stored_files, output_path)
+        merge_pdfs(
+            stored_files,
+            output_path,
+            document_info=metadata_overrides,
+            bookmarks=bookmark_titles,
+        )
     except Exception as exc:  # pragma: no cover - defensive conversion to HTTP error
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
