@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Mapping, Optional, Sequence
 
 from pypdf import PdfReader, PdfWriter
 
@@ -34,6 +34,8 @@ def merge_pdfs(
     output: PathLike,
     *,
     metadata: bool = True,
+    document_info: Mapping[str, object] | None = None,
+    bookmarks: Sequence[str] | None = None,
 ) -> Path:
     """Merge *inputs* into *output* and return the resulting path.
 
@@ -57,8 +59,9 @@ def merge_pdfs(
 
     writer = PdfWriter()
     first_metadata: Optional[dict[str, str]] = None
+    bookmark_targets: list[tuple[str, int]] = []
 
-    for pdf_path in pdf_paths:
+    for index, pdf_path in enumerate(pdf_paths):
         LOGGER.debug("Processing input PDF %s", pdf_path)
         try:
             validate_pdf(pdf_path)
@@ -66,9 +69,20 @@ def merge_pdfs(
             raise PdfMergeError(f"Invalid PDF: {pdf_path}") from exc
 
         reader = _load_reader(pdf_path)
+        start_page_index = len(writer.pages)
         for page_index, page in enumerate(reader.pages):
             LOGGER.debug("Adding page %s from %s", page_index, pdf_path)
             writer.add_page(page)
+
+        if bookmarks:
+            try:
+                title = bookmarks[index]
+            except IndexError:
+                title = None
+
+            if not title:
+                title = pdf_path.stem or f"Document {index + 1}"
+            bookmark_targets.append((title, start_page_index))
 
         if metadata and first_metadata is None:
             try:
@@ -85,9 +99,39 @@ def merge_pdfs(
                     "Failed to capture metadata from %s: %s", pdf_path, exc
                 )
 
-    if metadata and first_metadata:
-        LOGGER.debug("Setting metadata on merged PDF: %s", first_metadata)
-        writer.add_metadata(first_metadata)
+    metadata_to_apply: dict[str, str] | None = None
+    if document_info:
+        metadata_to_apply = {}
+        metadata_key_map = {
+            "title": "/Title",
+            "author": "/Author",
+            "subject": "/Subject",
+            "keywords": "/Keywords",
+        }
+        for key, value in document_info.items():
+            if value is None:
+                continue
+            string_value = str(value).strip()
+            if not string_value:
+                continue
+            pdf_key = metadata_key_map.get(key.lower(), None)
+            if pdf_key is None:
+                pdf_key = key if str(key).startswith("/") else f"/{key}"
+            metadata_to_apply[pdf_key] = string_value
+    elif metadata and first_metadata:
+        metadata_to_apply = first_metadata
+
+    if metadata_to_apply:
+        LOGGER.debug("Setting metadata on merged PDF: %s", metadata_to_apply)
+        writer.add_metadata(metadata_to_apply)
+
+    if bookmark_targets:
+        LOGGER.debug("Adding %d bookmark(s) to merged PDF", len(bookmark_targets))
+        for title, page_index in bookmark_targets:
+            try:
+                writer.add_outline_item(title, writer.pages[page_index])
+            except Exception as exc:  # pragma: no cover - defensive
+                LOGGER.warning("Failed to add bookmark '%s': %s", title, exc)
 
     try:
         with output_path.open("wb") as output_handle:
