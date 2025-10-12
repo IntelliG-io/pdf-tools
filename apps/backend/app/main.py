@@ -7,7 +7,15 @@ from tempfile import TemporaryDirectory
 from typing import Iterable, List, Sequence
 from zipfile import ZipFile
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
@@ -70,7 +78,11 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get(f"{DOCS_PREFIX}/openapi.json", include_in_schema=False)
+@app.get(
+    f"{DOCS_PREFIX}/openapi.json",
+    include_in_schema=False,
+    name="prefixed_openapi",
+)
 async def prefixed_openapi() -> JSONResponse:
     """Expose the OpenAPI schema under the gateway's ``/api`` prefix."""
 
@@ -78,11 +90,11 @@ async def prefixed_openapi() -> JSONResponse:
 
 
 @app.get(f"{DOCS_PREFIX}/docs", include_in_schema=False)
-async def prefixed_swagger_ui() -> HTMLResponse:
+async def prefixed_swagger_ui(request: Request) -> HTMLResponse:
     """Serve Swagger UI from the same ``/api`` prefix used by the gateway."""
 
     return get_swagger_ui_html(
-        openapi_url=f"{DOCS_PREFIX}/openapi.json",
+        openapi_url=str(request.url_for("prefixed_openapi")),
         title=f"{app.title} - Swagger UI",
     )
 
