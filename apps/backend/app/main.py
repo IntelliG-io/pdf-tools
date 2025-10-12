@@ -601,15 +601,12 @@ def _perform_pdf_to_docx_conversion(
     page_numbers: list[int] | None,
     conversion_metadata: ConversionMetadata | None,
 ):
-    """Convert ``input_path`` PDF to DOCX using a simple, well-defined pipeline.
+    """Convert ``input_path`` PDF to DOCX by delegating to the pdf2docx package.
 
-    The conversion is broken into explicit steps so we can reason about the behaviour:
-
-    1. Build a :class:`ConversionOptions` instance with all advanced features disabled
-       to avoid unpredictable transformations.
-    2. Instantiate :class:`PdfToDocxConverter` with those options so the pdf2docx
-       engine handles the heavy lifting.
-    3. Run ``convert`` with the prepared metadata and return the resulting stats.
+    The backend's job is to configure :class:`ConversionOptions` and hand control to
+    :class:`PdfToDocxConverter`. The converter is responsible for the detailed pipeline
+    (opening the PDF, parsing structure, extracting fonts/images, building the
+    intermediate representation, generating DOCX parts, and validating the package).
     """
 
     options = ConversionOptions(

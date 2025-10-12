@@ -14,6 +14,7 @@ from .fonts import apply_translation_map as _apply_translation_map, font_transla
 from .layout import blocks_to_paragraphs_static as _blocks_to_paragraphs_static
 from .lists import normalise_text_for_numbering as _normalise_text_for_numbering
 from .metadata import merge_metadata as _merge_metadata, metadata_from_mapping as _metadata_from_mapping, parse_pdf_date as _parse_pdf_date
+from .pipeline import PdfToDocxPipeline
 from .reader import extract_outline, extract_struct_roles, page_from_reader
 from .text import CapturedText as _CapturedText
 from .types import ConversionMetadata, ConversionOptions, ConversionResult, PdfDocumentLike
@@ -49,69 +50,17 @@ class PdfToDocxConverter:
         metadata: ConversionMetadata | None = None,
     ) -> ConversionResult:
         destination = self._resolve_output_path(input_document, output_path)
-
-        if _is_pdf_document_like(input_document):
-            document = input_document  # type: ignore[assignment]
-            page_count = document.page_count
-            page_numbers = self._resolve_page_numbers(page_count, self.options.page_numbers)
-            tagged = getattr(document, "tagged", False)
-            metadata_map = getattr(document, "metadata", None)
-            base_metadata = _metadata_from_mapping(metadata_map)
-            builder = _DocumentBuilder(
-                base_metadata,
-                strip_whitespace=self.options.strip_whitespace,
-                include_outline_toc=self.options.include_outline_toc,
-                generate_toc_field=self.options.generate_toc_field,
-                footnotes_as_endnotes=self.options.footnotes_as_endnotes,
-            )
-            builder.register_outline(getattr(document, "outline", None))
-            selected = set(page_numbers)
-            order = {page_number: position for position, page_number in enumerate(page_numbers)}
-            sorted_pages: list[tuple[int, Page]] = []
-            for index, page in enumerate(document.iter_pages()):
-                if index in selected:
-                    sorted_pages.append((order.get(index, index), page))
-            for _, page in sorted(sorted_pages, key=lambda item: item[0]):
-                builder.process_page(page, page.number)  # type: ignore[arg-type]
-            document_ir = builder.build(tagged=tagged, page_count=len(page_numbers))
-        else:
-            source_path = Path(input_document)
-            reader = PdfReader(str(source_path))
-            page_count = len(reader.pages)
-            page_numbers = self._resolve_page_numbers(page_count, self.options.page_numbers)
-            struct_roles, global_roles, tagged = extract_struct_roles(reader)
-            base_metadata = _metadata_from_mapping(reader.metadata)
-            builder = _DocumentBuilder(
-                base_metadata,
-                strip_whitespace=self.options.strip_whitespace,
-                include_outline_toc=self.options.include_outline_toc,
-                generate_toc_field=self.options.generate_toc_field,
-                footnotes_as_endnotes=self.options.footnotes_as_endnotes,
-            )
-            builder.register_outline(extract_outline(reader))
-            global_iter = iter(global_roles)
-            for index in page_numbers:
-                page = reader.pages[index]
-                roles_iter = _chain_roles(struct_roles.get(index, []), global_iter)
-                page_primitives = page_from_reader(
-                    page,
-                    roles_iter,
-                    index,
-                    strip_whitespace=self.options.strip_whitespace,
-                    reader=reader,
-                )
-                builder.process_page(page_primitives, index)
-            document_ir = builder.build(tagged=tagged, page_count=len(page_numbers))
-
-        document_ir.metadata = _merge_metadata(document_ir.metadata, metadata)
-        stats = write_docx(document_ir, destination)
+        pipeline = PdfToDocxPipeline(self.options)
+        document_ir, stats, log = pipeline.run(input_document, destination, metadata)
+        pages, paragraphs, words, lines = stats
         return ConversionResult(
             output_path=destination.resolve(),
-            page_count=stats.pages,
-            paragraph_count=stats.paragraphs,
-            word_count=stats.words,
-            line_count=stats.lines,
+            page_count=pages,
+            paragraph_count=paragraphs,
+            word_count=words,
+            line_count=lines,
             tagged_pdf=document_ir.tagged_pdf,
+            log=log,
         )
 
     def _extract_struct_roles(self, reader: PdfReader):
