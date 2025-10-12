@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
-from dataclasses import dataclass
 from datetime import datetime
 from json import JSONDecodeError
 from pathlib import Path
@@ -25,8 +23,6 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from pypdf import PdfReader
-
 from intellipdf import (
     ConversionMetadata,
     ConversionOptions,
@@ -35,29 +31,12 @@ from intellipdf import (
     merge_pdfs,
     split_pdf,
 )
-from intellipdf.pdf2docx.converter import (
-    ConversionResult,
-    _DocumentBuilder,
-    _blocks_to_paragraphs_static,
-)
-from intellipdf.pdf2docx.converter.metadata import (
-    metadata_from_mapping as _metadata_from_mapping,
-    merge_metadata as _merge_metadata,
-)
-from intellipdf.pdf2docx.converter.reader import (
-    extract_outline,
-    extract_struct_roles,
-    page_from_reader,
-)
-from intellipdf.pdf2docx.docx import write_docx
-from intellipdf.pdf2docx.ir import DocumentMetadata
-from intellipdf.pdf2docx.primitives import OutlineNode, Page
+from intellipdf.pdf2docx.converter import PdfToDocxConverter
 from intellipdf.split.exceptions import IntelliPDFSplitError, InvalidPageRangeError
 from intellipdf.split.utils import PageRange, parse_page_ranges
 
 app = FastAPI(title="IntelliPDF API", version="0.2.0")
 DOCS_PREFIX = "/api"
-logger = logging.getLogger(__name__)
 
 def _cleanup_temp_dir(background_tasks: BackgroundTasks, temp_dir: TemporaryDirectory) -> None:
     """Schedule ``temp_dir`` to be cleaned up after the response is sent."""
@@ -599,14 +578,14 @@ async def convert_pdf_to_docx_endpoint(
     _cleanup_temp_dir(background_tasks, temp_dir)
 
     headers = {
-        "X-IntelliPDF-Docx-Page-Count": str(result.conversion.page_count),
-        "X-IntelliPDF-Docx-Paragraph-Count": str(result.conversion.paragraph_count),
-        "X-IntelliPDF-Docx-Word-Count": str(result.conversion.word_count),
-        "X-IntelliPDF-Docx-Line-Count": str(result.conversion.line_count),
+        "X-IntelliPDF-Docx-Page-Count": str(result.page_count),
+        "X-IntelliPDF-Docx-Paragraph-Count": str(result.paragraph_count),
+        "X-IntelliPDF-Docx-Word-Count": str(result.word_count),
+        "X-IntelliPDF-Docx-Line-Count": str(result.line_count),
     }
 
     return FileResponse(
-        result.conversion.output_path,
+        result.output_path,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=output_filename,
         headers=headers,
@@ -616,232 +595,19 @@ async def convert_pdf_to_docx_endpoint(
 __all__ = ["app"]
 
 
-@dataclass(slots=True)
-class StageSummary:
-    """Structured information captured after a pipeline stage completes."""
-
-    name: str
-    details: dict[str, object]
-
-
-@dataclass(slots=True)
-class PipelineDiagnostics:
-    """Aggregate diagnostics emitted by the conversion pipeline."""
-
-    stages: list[StageSummary]
-
-    def as_dict(self) -> dict[str, dict[str, object]]:
-        return {stage.name: dict(stage.details) for stage in self.stages}
-
-    def get(self, name: str) -> StageSummary:
-        for stage in self.stages:
-            if stage.name == name:
-                return stage
-        raise KeyError(f"No diagnostics captured for stage '{name}'.")
-
-
-@dataclass(slots=True)
-class PipelineResult:
-    """Final output of the PDF → DOCX conversion pipeline."""
-
-    conversion: ConversionResult
-    diagnostics: PipelineDiagnostics
-
-
-@dataclass(slots=True)
-class PdfParsingArtifacts:
-    reader: PdfReader
-    page_numbers: list[int]
-    metadata: DocumentMetadata
-    outline: Sequence[OutlineNode] | None
-    tagged: bool
-    struct_roles: dict[int, list[str]]
-    global_roles: list[str]
-
-
-@dataclass(slots=True)
-class LayoutAnalysisArtifacts:
-    pages: list[Page]
-    fonts: set[str]
-    image_count: int
-    text_block_count: int
-    paragraph_estimate: int
-
-
-def _chain_roles(page_roles: Sequence[str], global_roles: Iterable[str]) -> Iterable[str]:
-    for role in page_roles:
-        yield role
-    yield from global_roles
-
-
-def _resolve_page_numbers(total_pages: int, requested: Sequence[int] | None) -> list[int]:
-    if requested is None:
-        return list(range(total_pages))
-    result: list[int] = []
-    for page in requested:
-        if page < 0 or page >= total_pages:
-            raise ValueError(
-                f"Page index {page} out of bounds for document with {total_pages} pages"
-            )
-        result.append(page)
-    return result
-
-
-def _list_docx_parts(output_path: Path) -> list[str]:
-    try:
-        with ZipFile(output_path) as archive:
-            return sorted(archive.namelist())
-    except Exception:  # pragma: no cover - defensive diagnostic helper
-        return []
-
-
-class PdfParser:
-    """Stage responsible for opening a PDF and extracting structural metadata."""
-
-    def __init__(self, options: ConversionOptions) -> None:
-        self._options = options
-
-    def parse(self, input_path: Path) -> tuple[PdfParsingArtifacts, StageSummary]:
-        reader = PdfReader(str(input_path))
-        total_pages = len(reader.pages)
-        page_numbers = _resolve_page_numbers(total_pages, self._options.page_numbers)
-        struct_roles, global_roles, tagged = extract_struct_roles(reader)
-        outline = extract_outline(reader)
-        metadata = _metadata_from_mapping(reader.metadata)
-        summary = StageSummary(
-            name="pdf-parsing",
-            details={
-                "page_count": total_pages,
-                "selected_pages": list(page_numbers),
-                "tagged_pdf": tagged,
-            },
-        )
-        logger.info("PDF parsing complete", extra={"stage": summary.name, **summary.details})
-        artifacts = PdfParsingArtifacts(
-            reader=reader,
-            page_numbers=page_numbers,
-            metadata=metadata,
-            outline=outline,
-            tagged=tagged,
-            struct_roles={int(key): list(value) for key, value in struct_roles.items()},
-            global_roles=list(global_roles),
-        )
-        return artifacts, summary
-
-
-class LayoutAnalyzer:
-    """Stage that converts parsed PDF pages into drawable primitives."""
-
-    def __init__(self, options: ConversionOptions) -> None:
-        self._options = options
-
-    def analyse(
-        self, artifacts: PdfParsingArtifacts
-    ) -> tuple[LayoutAnalysisArtifacts, StageSummary]:
-        pages: list[Page] = []
-        fonts: set[str] = set()
-        text_block_count = 0
-        paragraph_estimate = 0
-        image_count = 0
-        global_iter = iter(artifacts.global_roles)
-        for index in artifacts.page_numbers:
-            page = artifacts.reader.pages[index]
-            roles_iter = _chain_roles(artifacts.struct_roles.get(index, []), global_iter)
-            page_primitives = page_from_reader(
-                page,
-                roles_iter,
-                index,
-                strip_whitespace=self._options.strip_whitespace,
-                reader=artifacts.reader,
-            )
-            pages.append(page_primitives)
-            text_block_count += len(page_primitives.text_blocks)
-            image_count += len(page_primitives.images)
-            fonts.update(
-                block.font_name for block in page_primitives.text_blocks if block.font_name
-            )
-            paragraph_estimate += len(
-                _blocks_to_paragraphs_static(
-                    page_primitives.text_blocks,
-                    strip_whitespace=self._options.strip_whitespace,
-                )
-            )
-        layout_artifacts = LayoutAnalysisArtifacts(
-            pages=pages,
-            fonts=fonts,
-            image_count=image_count,
-            text_block_count=text_block_count,
-            paragraph_estimate=paragraph_estimate,
-        )
-        summary = StageSummary(
-            name="layout-analysis",
-            details={
-                "pages": len(pages),
-                "fonts": sorted(fonts),
-                "images": image_count,
-                "text_blocks": text_block_count,
-                "paragraph_estimate": paragraph_estimate,
-            },
-        )
-        logger.info("Layout analysis complete", extra={"stage": summary.name, **summary.details})
-        return layout_artifacts, summary
-
-
-class DocxPackager:
-    """Stage that builds the IR document and writes the DOCX package."""
-
-    def __init__(self, options: ConversionOptions) -> None:
-        self._options = options
-
-    def package(
-        self,
-        artifacts: PdfParsingArtifacts,
-        layout: LayoutAnalysisArtifacts,
-        output_path: Path,
-        conversion_metadata: ConversionMetadata | None,
-    ) -> tuple[ConversionResult, StageSummary]:
-        builder = _DocumentBuilder(
-            artifacts.metadata,
-            strip_whitespace=self._options.strip_whitespace,
-            include_outline_toc=self._options.include_outline_toc,
-            generate_toc_field=self._options.generate_toc_field,
-            footnotes_as_endnotes=self._options.footnotes_as_endnotes,
-        )
-        builder.register_outline(artifacts.outline)
-        for page in layout.pages:
-            builder.process_page(page, page.number)
-        document_ir = builder.build(tagged=artifacts.tagged, page_count=len(layout.pages))
-        document_ir.metadata = _merge_metadata(document_ir.metadata, conversion_metadata)
-        stats = write_docx(document_ir, output_path)
-        conversion = ConversionResult(
-            output_path=output_path.resolve(),
-            page_count=stats.pages,
-            paragraph_count=stats.paragraphs,
-            word_count=stats.words,
-            line_count=stats.lines,
-            tagged_pdf=document_ir.tagged_pdf,
-        )
-        summary = StageSummary(
-            name="docx-packaging",
-            details={
-                "paragraphs": stats.paragraphs,
-                "words": stats.words,
-                "lines": stats.lines,
-                "metadata_title": document_ir.metadata.title,
-                "docx_parts": _list_docx_parts(output_path),
-            },
-        )
-        logger.info("DOCX packaging complete", extra={"stage": summary.name, **summary.details})
-        return conversion, summary
-
-
 def _perform_pdf_to_docx_conversion(
     input_path: Path,
     output_path: Path,
     page_numbers: list[int] | None,
     conversion_metadata: ConversionMetadata | None,
 ):
-    """Convert ``input_path`` PDF to DOCX using an explicit staged pipeline."""
+    """Convert ``input_path`` PDF to DOCX by delegating to the pdf2docx package.
+
+    The backend's job is to configure :class:`ConversionOptions` and hand control to
+    :class:`PdfToDocxConverter`. The converter is responsible for the detailed pipeline
+    (opening the PDF, parsing structure, extracting fonts/images, building the
+    intermediate representation, generating DOCX parts, and validating the package).
+    """
 
     options = ConversionOptions(
         page_numbers=page_numbers,
@@ -851,20 +617,10 @@ def _perform_pdf_to_docx_conversion(
         generate_toc_field=False,
         footnotes_as_endnotes=False,
     )
-    parser = PdfParser(options)
-    layout = LayoutAnalyzer(options)
-    packager = DocxPackager(options)
 
-    artifacts, parsing_summary = parser.parse(input_path)
-    layout_artifacts, layout_summary = layout.analyse(artifacts)
-    conversion, packaging_summary = packager.package(
-        artifacts,
-        layout_artifacts,
+    converter = PdfToDocxConverter(options)
+    return converter.convert(
+        input_path,
         output_path,
-        conversion_metadata,
+        metadata=conversion_metadata,
     )
-
-    diagnostics = PipelineDiagnostics(
-        stages=[parsing_summary, layout_summary, packaging_summary]
-    )
-    return PipelineResult(conversion=conversion, diagnostics=diagnostics)
