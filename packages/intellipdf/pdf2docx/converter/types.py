@@ -55,6 +55,7 @@ class ConversionResult:
     word_count: int
     line_count: int
     tagged_pdf: bool
+    log: tuple[str, ...] = ()
 
 
 @runtime_checkable

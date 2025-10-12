@@ -28,6 +28,7 @@ from intellipdf.pdf2docx.converter import (
     _normalise_text_for_numbering,
     _parse_pdf_date,
 )
+from intellipdf.pdf2docx.converter.pipeline import PIPELINE_STEPS
 from intellipdf.pdf2docx.converter.math import block_to_equation, mathml_to_omml
 from intellipdf.pdf2docx.converter.reader import _is_vertical_matrix, extract_vector_graphics
 from intellipdf.pdf2docx.converter.text import CapturedText, text_fragments_to_blocks
@@ -125,6 +126,13 @@ def _create_pdf(path: Path, text: str, metadata: dict[str, str] | None = None) -
         writer.write(fh)
 
 
+def _assert_pipeline_log(result) -> None:
+    assert len(result.log) == len(PIPELINE_STEPS)
+    assert result.log[0].startswith("Load or receive parsed PdfDocument instance.")
+    assert result.log[-1].startswith("Return success status and summary log")
+    assert any("Extracted" in entry for entry in result.log), "Expected extraction details in log"
+
+
 @pytest.mark.parametrize("text", ["Hello PDF", "Multi\nLine PDF"])
 def test_pdf_to_docx_conversion(tmp_path: Path, text: str) -> None:
     pdf_path = tmp_path / "input.pdf"
@@ -137,6 +145,7 @@ def test_pdf_to_docx_conversion(tmp_path: Path, text: str) -> None:
     assert result.page_count == 1
     assert result.paragraph_count >= 1
     assert result.word_count >= 2
+    _assert_pipeline_log(result)
 
     with ZipFile(docx_path) as archive:
         with archive.open("word/document.xml") as handle:
@@ -181,6 +190,7 @@ def test_pdf_document_primitives_conversion(tmp_path: Path) -> None:
     assert result.paragraph_count == 1
     assert result.word_count >= 3
     assert result.tagged_pdf is True
+    _assert_pipeline_log(result)
 
     with ZipFile(output) as archive:
         assert "word/document.xml" in archive.namelist()
