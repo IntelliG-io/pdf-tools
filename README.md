@@ -115,6 +115,93 @@ splitting.
 The repository root still includes a `pyproject.toml` so the library can be
 installed with `pip install .` if required.
 
+## Containerisation
+
+Both the FastAPI backend and the Vite-powered frontend ship with Docker
+definitions so every environment (local, staging, production) runs the same
+artifacts.
+
+### Local stack (`compose.local.yml`)
+
+Spin up a full local stack—frontend, backend, and an Nginx gateway—using:
+
+```bash
+docker compose -f compose.local.yml up --build
+```
+
+The gateway exposes the app on [http://localhost:8080](http://localhost:8080)
+and proxies `/api/` requests to the backend container. The Docker images mirror
+the production build, so the local experience matches what is deployed to the
+droplet.
+
+## Deployment pipeline
+
+The repository ships with a GitHub Actions workflow
+(`.github/workflows/deploy.yml`) that builds **both** service images and deploys
+them to a DigitalOcean droplet whenever changes land on the `main` (production)
+or `dev` (staging) branches. The pipeline performs the following steps:
+
+1. Build the backend (`docker/backend.Dockerfile`) and frontend
+   (`docker/frontend.Dockerfile`) images and push them to the GitHub Container
+   Registry (GHCR) with a shared tag (`production` for `main`, `staging` for
+   `dev`). Commit-specific tags are also pushed for traceability.
+2. Connect to the droplet over SSH and update the matching Docker Compose stack
+   (`/opt/pdf-tools/prod` or `/opt/pdf-tools/dev`) so each environment is kept in
+   sync automatically. The script logs into GHCR on the droplet, pulls the new
+   images, and restarts the services with `docker compose up -d`.
+
+### One-time server preparation
+
+On the droplet, create directories for production and staging, copy the Compose
+files, and (optionally) preserve the legacy stack in its own directory:
+
+```bash
+sudo mkdir -p /opt/pdf-tools/prod /opt/pdf-tools/dev /opt/pdf-tools/legacy
+cd /opt/pdf-tools
+sudo cp ~/pdf-tools/deploy/docker-compose.prod.yml prod/docker-compose.yml
+sudo cp ~/pdf-tools/deploy/docker-compose.dev.yml dev/docker-compose.yml
+```
+
+Each Compose file expects `BACKEND_IMAGE` and `FRONTEND_IMAGE` environment
+variables. The workflow injects them automatically, but you can test a rollout
+manually by exporting both variables before running Compose:
+
+```bash
+export BACKEND_IMAGE=ghcr.io/your-user/pdf-tools-backend:production
+export FRONTEND_IMAGE=ghcr.io/your-user/pdf-tools-frontend:production
+docker compose -f /opt/pdf-tools/prod/docker-compose.yml up -d
+```
+
+Expose the containers behind Nginx using the sample configuration in
+`deploy/nginx/pdfspoint.conf`. The file maps:
+
+- `pdfspoint.com` → production frontend (`9100`) with `/api/` proxied to the
+  production backend (`9000`).
+- `dev.pdfspoint.com` → staging frontend (`9101`) with `/api/` proxied to the
+  staging backend (`9001`).
+- `legacy.pdfspoint.com` → the legacy container (expected on `9002`).
+
+Remember to request TLS certificates (for example via `certbot`) and expand the
+server blocks with HTTPS directives before going live.
+
+### Required GitHub secrets
+
+Add the following secrets to the repository so the workflow can authenticate and
+log into the droplet and GHCR:
+
+| Secret | Description |
+|--------|-------------|
+| `DEPLOY_SSH_KEY` | Private key that matches the droplet user’s public key. |
+| `DEPLOY_USER` | SSH user name (for example `root` or a dedicated deploy user). |
+| `DEV_HOST` | Hostname or IP address for the staging deployment (can match the production IP). |
+| `PRODUCTION_HOST` | Hostname or IP address for the production deployment. |
+| `GHCR_USERNAME` | Account name with read access to the GHCR repository. |
+| `GHCR_PASSWORD` | Personal access token with the `read:packages` scope for GHCR. |
+
+With the secrets in place, merging to `main` updates `pdfspoint.com`, merging to
+`dev` updates `dev.pdfspoint.com`, and the legacy system can continue to run on
+`legacy.pdfspoint.com` until it is retired.
+
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).

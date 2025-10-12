@@ -1,0 +1,35 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Coverage
+.coverage
+htmlcov/
+
+# Environments
+.env
+.env.*
+*.env
+
+# IDEs and editors
+.vscode/
+.idea/
+
+# Python build
+build/
+dist/
+.eggs/
+*.egg-info/
+
+# Node
+apps/frontend/node_modules/
+apps/frontend/.next/
+apps/frontend/build/
+
+# pytest cache
+.pytest_cache/
+
+# macOS
+.DS_Store
