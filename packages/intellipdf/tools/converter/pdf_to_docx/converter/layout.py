@@ -454,7 +454,8 @@ def _detect_tables_from_whitespace(
         column_edges = _grid_edges_from_centers(page, cluster, vertical=False)
         row_count = len(row_edges) - 1
         column_count = len(column_edges) - 1
-        if row_count < 2 or column_count < 2:
+        # Require a more substantial grid to avoid false positives
+        if row_count < 3 or column_count < 3:
             continue
         detection = _build_table_from_grid(
             page,
@@ -803,9 +804,33 @@ def _looks_numeric(text: str) -> bool:
 def _table_has_tabular_density(table: Table) -> bool:
     if not table.rows:
         return False
-    populated_rows = sum(1 for row in table.rows if any(cell.content for cell in row.cells))
-    max_columns = max(len(row.cells) for row in table.rows)
-    return populated_rows >= 2 and max_columns >= 2
+    total_cells = sum(len(row.cells) for row in table.rows)
+    if total_cells < 4:
+        return False
+    max_columns = 0
+    filled_cells = 0
+    rows_with_two = 0
+    for row in table.rows:
+        max_columns = max(max_columns, len(row.cells))
+        filled_in_row = 0
+        for cell in row.cells:
+            # Consider a cell filled if it contains any paragraph with non-empty text
+            has_text = False
+            for element in cell.content:
+                text_getter = getattr(element, "text", None)
+                if callable(text_getter):
+                    if (text_getter() or "").strip():
+                        has_text = True
+                        break
+            if has_text:
+                filled_cells += 1
+                filled_in_row += 1
+        if filled_in_row >= 2:
+            rows_with_two += 1
+    if max_columns < 2 or rows_with_two < 2:
+        return False
+    ratio = filled_cells / max(1, total_cells)
+    return ratio >= 0.35
 
 
 def _table_alignment(page_width: float, left: float, right: float) -> str | None:
@@ -823,16 +848,27 @@ def infer_columns(page: Page) -> tuple[int, float | None]:
     if not page.text_blocks:
         return 1, None
     positions = sorted(block.bbox.left for block in page.text_blocks)
-    if len(positions) < 4:
+    if len(positions) < 10:
+        return 1, None
+    # Ensure most blocks are relatively narrow compared to page width
+    widths = [max(0.0, block.bbox.right - block.bbox.left) for block in page.text_blocks]
+    if not widths:
+        return 1, None
+    widths.sort()
+    median_width = widths[len(widths)//2]
+    if median_width > page.width * 0.4:
         return 1, None
     gaps = [positions[index + 1] - positions[index] for index in range(len(positions) - 1)]
     if not gaps:
         return 1, None
     average_gap = sum(gaps) / len(gaps)
-    large_gaps = [gap for gap in gaps if gap > average_gap * 2]
+    large_gaps = [gap for gap in gaps if gap > average_gap * 4.0]
     if len(large_gaps) >= 1:
         columns = min(len(large_gaps) + 1, 3)
         spacing = min(large_gaps)
+        # Avoid absurd spacing relative to page width
+        if spacing > max(1.0, page.width * 0.3):
+            return 1, None
         return columns, spacing
     return 1, None
 

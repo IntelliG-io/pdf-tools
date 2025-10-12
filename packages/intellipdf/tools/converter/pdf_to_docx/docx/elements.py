@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from xml.etree.ElementTree import Element, SubElement, fromstring
 from xml.etree.ElementTree import ParseError
 
@@ -253,13 +254,18 @@ def build_run_element(run) -> Element:
         if run.style:
             SubElement(r_pr, f"{w_ns}rStyle", {f"{w_ns}val": run.style})
         if run.font_name:
+            font_name = run.font_name
+            try:
+                font_name = re.sub(r"^[A-Z]{6,7}\+", "", font_name)
+            except Exception:
+                pass
             SubElement(
                 r_pr,
                 f"{w_ns}rFonts",
                 {
-                    f"{w_ns}ascii": run.font_name,
-                    f"{w_ns}hAnsi": run.font_name,
-                    f"{w_ns}cs": run.font_name,
+                    f"{w_ns}ascii": font_name,
+                    f"{w_ns}hAnsi": font_name,
+                    f"{w_ns}cs": font_name,
                 },
             )
         if run.font_size:

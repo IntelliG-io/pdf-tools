@@ -391,7 +391,7 @@ class DocumentBuilder:
         if self._previous_page_number == page_number:
             baseline = block.font_size or self._previous_block.font_size or 12.0
             vertical_gap = self._previous_block.bbox.bottom - block.bbox.top
-            if vertical_gap > baseline * 1.2:
+            if vertical_gap > baseline * 1.0:
                 return False
         else:
             if not self._pending_continue or self._current_section is None:

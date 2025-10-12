@@ -179,7 +179,7 @@ def text_fragments_to_blocks(
             last_x = fragment.x + advance
 
         combined = "".join(text_parts)
-        if not combined:
+        if not combined or not combined.strip():
             continue
         min_x = min(item.x for item in line)
         font_size = next((item.font_size for item in line if item.font_size), None)
@@ -231,7 +231,7 @@ def text_fragments_to_blocks(
             last_y = fragment.y
 
         combined = "".join(text_parts)
-        if not combined:
+        if not combined or not combined.strip():
             continue
         font_size = next((item.font_size for item in column if item.font_size), None)
         font_name = next((item.font_name for item in column if item.font_name), None)

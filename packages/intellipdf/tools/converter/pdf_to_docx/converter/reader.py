@@ -558,8 +558,30 @@ def capture_text_fragments(page: DictionaryObject) -> list[CapturedText]:
     ) -> None:
         if not text:
             return
-        x = tm[4] if tm else 0.0
-        y = tm[5] if tm else 0.0
+        # Compute transformed position and effective font size using combined matrix
+        # Build 6-element matrices for cm and tm where available
+        cm6: tuple[float, float, float, float, float, float] | None = None
+        tm6: tuple[float, float, float, float, float, float] | None = None
+        try:
+            if cm and len(cm) >= 6:
+                cm6 = (float(cm[0]), float(cm[1]), float(cm[2]), float(cm[3]), float(cm[4]), float(cm[5]))
+        except Exception:
+            cm6 = None
+        try:
+            if tm and len(tm) >= 6:
+                tm6 = (float(tm[0]), float(tm[1]), float(tm[2]), float(tm[3]), float(tm[4]), float(tm[5]))
+        except Exception:
+            tm6 = None
+        combined: tuple[float, float, float, float, float, float]
+        if cm6 and tm6:
+            combined = _matrix_multiply(cm6, tm6)
+        elif tm6:
+            combined = tm6
+        elif cm6:
+            combined = cm6
+        else:
+            combined = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+        x, y = _matrix_apply(combined, 0.0, 0.0)
         base_font = None
         resolved_font: DictionaryObject | None = None
         if font_dict is not None:
@@ -585,13 +607,23 @@ def capture_text_fragments(page: DictionaryObject) -> list[CapturedText]:
         vertical = False
         if _is_vertical_matrix(tm) and is_east_asian_text(text):
             vertical = True
+
+        # Compute effective font size from combined matrix scale
+        a, b, c, d, _e, _f = combined
+        try:
+            sx = (a * a + b * b) ** 0.5
+            sy = (c * c + d * d) ** 0.5
+            scale = sy if vertical and sy > 0 else sx if sx > 0 else max(sx, sy)
+            eff_font_size = float(font_size) * scale if font_size else None
+        except Exception:
+            eff_font_size = float(font_size) if font_size else None
         fragments.append(
             CapturedText(
                 text=text,
                 x=float(x),
                 y=float(y),
                 font_name=str(base_font) if base_font is not None else None,
-                font_size=float(font_size) if font_size else None,
+                font_size=eff_font_size,
                 vertical=vertical,
             )
         )

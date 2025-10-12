@@ -77,6 +77,13 @@ def estimate_margins(page: Page) -> tuple[float, float, float, float]:
     margin_top = min(margin_top, height / 2)
     margin_bottom = min(margin_bottom, height / 2)
 
+    # Clamp extreme margins to reasonable maximum (approx 2.5 inches)
+    max_margin = 180.0
+    margin_top = min(margin_top, max_margin)
+    margin_bottom = min(margin_bottom, max_margin)
+    margin_left = min(margin_left, max_margin)
+    margin_right = min(margin_right, max_margin)
+
     return (margin_top, margin_bottom, margin_left, margin_right)
 
 
