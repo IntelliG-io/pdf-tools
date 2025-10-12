@@ -103,11 +103,30 @@ def _apply_path_backgrounds(page: Page) -> set[int]:
             continue
         bbox = path.bbox
         fill_hex = _rgb_tuple_to_hex(path.fill_color)
+        # Skip near-white backgrounds (likely page/section fills)
+        try:
+            r = int(fill_hex[0:2], 16)
+            g = int(fill_hex[2:4], 16)
+            b = int(fill_hex[4:6], 16)
+            if r > 245 and g > 245 and b > 245:
+                continue
+        except Exception:
+            pass
+        # Skip very large rectangles (likely page background bands)
+        page_area = max(1.0, page.width * page.height)
+        rect_area = max(0.0, (bbox.right - bbox.left) * (bbox.top - bbox.bottom))
+        if rect_area > page_area * 0.6:
+            continue
         matched = False
         for block in page.text_blocks:
             if not block.text:
                 continue
             if _bbox_contains(bbox, block.bbox, tolerance=4.0):
+                # Require the rectangle to be reasonably tight to the block
+                block_area = max(1.0, (block.bbox.right - block.bbox.left) * (block.bbox.top - block.bbox.bottom))
+                ratio = block_area / max(rect_area, 1.0)
+                if ratio < 0.25 or ratio > 2.5:
+                    continue
                 if not block.background_color:
                     block.background_color = fill_hex
                 if path.fill_alpha < 1.0:
@@ -130,7 +149,7 @@ def infer_alignment(block: TextBlock, section: Section) -> str | None:
     right_edge = section.page_width - section.margin_right
     if block.bbox.right >= right_edge - 5.0 and block.bbox.left > section.margin_left + width * 0.25:
         return "right"
-    if width >= usable_width * 0.9:
+    if width >= usable_width * 0.8:
         return "both"
     return "left"
 

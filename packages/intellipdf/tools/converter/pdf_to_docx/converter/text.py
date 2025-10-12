@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from statistics import fmean
+from statistics import fmean, median
 
 from ..primitives import BoundingBox, TextBlock
 from .constants import (
@@ -182,7 +182,12 @@ def text_fragments_to_blocks(
         if not combined or not combined.strip():
             continue
         min_x = min(item.x for item in line)
-        font_size = next((item.font_size for item in line if item.font_size), None)
+        sizes = [item.font_size for item in line if item.font_size]
+        font_size = None
+        if sizes:
+            m = median(sizes)
+            # round to nearest 0.5pt to smooth tiny variations
+            font_size = round(m * 2) / 2.0
         font_name = next((item.font_name for item in line if item.font_name), None)
         block_height = font_size or 12.0
         bold, italic, underline = font_traits(font_name)
@@ -233,7 +238,11 @@ def text_fragments_to_blocks(
         combined = "".join(text_parts)
         if not combined or not combined.strip():
             continue
-        font_size = next((item.font_size for item in column if item.font_size), None)
+        sizes = [item.font_size for item in column if item.font_size]
+        font_size = None
+        if sizes:
+            m = median(sizes)
+            font_size = round(m * 2) / 2.0
         font_name = next((item.font_name for item in column if item.font_name), None)
         bold, italic, underline = font_traits(font_name)
         text_language = infer_language(combined)

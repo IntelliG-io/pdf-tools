@@ -816,7 +816,8 @@ class DocumentBuilder:
             paragraph.hanging_indent = None
             paragraph.first_line_indent = None
         else:
-            paragraph.first_line_indent = indent
+            # Clamp very small indents to zero (noise from bbox)
+            paragraph.first_line_indent = 0.0 if indent is None or indent < 6.0 else indent
             paragraph.hanging_indent = None
         if self._previous_block is not None and self._previous_page_number == self._current_page_number:
             gap = self._previous_block.bbox.bottom - block.bbox.top
