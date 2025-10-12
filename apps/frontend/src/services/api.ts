@@ -1,13 +1,13 @@
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '');
+
+const buildApiUrl = (path: string) =>
+  `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+
 const createPdfBlob = (label: string) =>
   new Blob([`%PDF-1.4\n% Dummy PDF generated for ${label}\n`], {
     type: 'application/pdf',
-  });
-
-const createZipBlob = (label: string) =>
-  new Blob([`Dummy ZIP archive for ${label}`], {
-    type: 'application/zip',
   });
 
 const createDocxBlob = (label: string) =>
@@ -15,20 +15,105 @@ const createDocxBlob = (label: string) =>
     type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   });
 
+const createZipBlob = (label: string) =>
+  new Blob([`Dummy ZIP archive for ${label}`], {
+    type: 'application/zip',
+  });
+
 const createImageBlob = (label: string, format: string = 'png') =>
   new Blob([`Dummy image data for ${label}`], {
     type: `image/${format}`,
   });
 
+const extractFilename = (header: string | null): string | undefined => {
+  if (!header) {
+    return undefined;
+  }
+
+  const starMatch = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (starMatch?.[1]) {
+    try {
+      return decodeURIComponent(starMatch[1]);
+    } catch (_error) {
+      return starMatch[1];
+    }
+  }
+
+  const regularMatch = header.match(/filename="?([^";]+)"?/i);
+  return regularMatch?.[1];
+};
+
+const parseErrorResponse = async (response: Response): Promise<Error> => {
+  const contentType = response.headers.get('content-type') ?? '';
+  let message = `Request failed with status ${response.status}`;
+
+  try {
+    if (contentType.includes('application/json')) {
+      const payload = await response.json();
+      if (typeof payload === 'string') {
+        message = payload;
+      } else if (payload?.detail) {
+        message = typeof payload.detail === 'string'
+          ? payload.detail
+          : JSON.stringify(payload.detail);
+      } else if (payload?.message) {
+        message = String(payload.message);
+      }
+    } else {
+      const text = await response.text();
+      if (text.trim()) {
+        message = text.trim();
+      }
+    }
+  } catch (_error) {
+    // Ignore parsing failures and keep the default message
+  }
+
+  return new Error(message);
+};
+
+const requestBinary = async (path: string, formData: FormData): Promise<Blob> => {
+  const response = await fetch(buildApiUrl(path), {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw await parseErrorResponse(response);
+  }
+
+  const blob = await response.blob();
+  const filename = extractFilename(response.headers.get('content-disposition'));
+  if (filename) {
+    (blob as any).filename = filename;
+  }
+
+  return blob;
+};
+
 // PDF merge operations
-export const mergePdfs = async (files: File[], options?: any) => {
+export const mergePdfs = async (files: File[], _options?: any) => {
   if (!files || files.length < 2) {
     throw new Error('At least two PDF files are required for merging');
   }
 
-  await delay(800);
-  return createPdfBlob('merged.pdf');
+  const formData = new FormData();
+  files.forEach((file) => formData.append('files', file));
+
+  const result = await requestBinary('/merge', formData);
+  if (!(result as any).filename) {
+    (result as any).filename = 'merged.pdf';
+  }
+
+  return result;
 };
+
+const serialiseRanges = (ranges: Array<{ start: number; end: number }>): string =>
+  ranges
+    .map(({ start, end }) => (start === end ? `${start}` : `${start}-${end}`))
+    .join(',');
+
+const serialisePages = (pages: Array<number>): string => pages.join(',');
 
 // PDF split operations
 export const splitPdf = async (file: File, options?: any) => {
@@ -36,10 +121,57 @@ export const splitPdf = async (file: File, options?: any) => {
     throw new Error('A PDF file is required for splitting');
   }
 
-  await delay(600);
-  const result = options?.outputFormat === 'zip' ? createZipBlob('split files') : createPdfBlob('split.pdf');
-  (result as any).filename = options?.outputFormat === 'zip' ? 'split-files.zip' : 'split.pdf';
-  return result;
+  const mode = options?.mode ?? 'ranges';
+  const formData = new FormData();
+  formData.append('file', file);
+
+  switch (mode) {
+    case 'ranges': {
+      const ranges = options?.ranges ?? [];
+      if (!Array.isArray(ranges) || ranges.length === 0) {
+        throw new Error('Please provide at least one page range to extract.');
+      }
+      formData.append('ranges', serialiseRanges(ranges));
+      const result = await requestBinary('/split/ranges', formData);
+      if (!(result as any).filename) {
+        (result as any).filename = 'extracted_ranges.pdf';
+      }
+      return result;
+    }
+    case 'pages': {
+      const pages = options?.pages ?? [];
+      if (!Array.isArray(pages) || pages.length === 0) {
+        throw new Error('Please provide at least one page number to split at.');
+      }
+      formData.append('pages', serialisePages(pages));
+      const result = await requestBinary('/split/pages', formData);
+      if (!(result as any).filename) {
+        (result as any).filename = 'split_pages.zip';
+      }
+      return result;
+    }
+    case 'everyNPages': {
+      const chunkSize = options?.everyNPages ?? options?.chunkSize;
+      if (!chunkSize || Number(chunkSize) < 1) {
+        throw new Error('Chunk size must be a positive integer.');
+      }
+      formData.append('chunk_size', String(chunkSize));
+      const result = await requestBinary('/split/every-n', formData);
+      if (!(result as any).filename) {
+        (result as any).filename = `split_every_${chunkSize}.zip`;
+      }
+      return result;
+    }
+    case 'all': {
+      const result = await requestBinary('/split/all-pages', formData);
+      if (!(result as any).filename) {
+        (result as any).filename = 'all_pages.zip';
+      }
+      return result;
+    }
+    default:
+      throw new Error(`Unsupported split mode: ${mode}`);
+  }
 };
 
 // Get PDF info (metadata, page count, etc.)
