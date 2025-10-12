@@ -864,11 +864,37 @@ def infer_columns(page: Page) -> tuple[int, float | None]:
     average_gap = sum(gaps) / len(gaps)
     large_gaps = [gap for gap in gaps if gap > average_gap * 4.0]
     if len(large_gaps) >= 1:
-        columns = min(len(large_gaps) + 1, 3)
-        spacing = min(large_gaps)
+        # Split at largest gap and validate cluster quality (size and tightness)
+        max_gap = max(large_gaps)
+        split_index = gaps.index(max_gap)
+        threshold = (positions[split_index] + positions[split_index + 1]) / 2.0
+
+        # Cluster blocks by threshold
+        left_blocks = [b for b in page.text_blocks if b.bbox.left < threshold]
+        right_blocks = [b for b in page.text_blocks if b.bbox.left >= threshold]
+        n = max(1, len(page.text_blocks))
+        # Require both clusters to be meaningful portions of the page content
+        if len(left_blocks) < max(4, int(0.35 * n)) or len(right_blocks) < max(4, int(0.35 * n)):
+            return 1, None
+
+        def _std(values: list[float]) -> float:
+            if not values:
+                return 0.0
+            mu = sum(values) / len(values)
+            return (sum((v - mu) * (v - mu) for v in values) / len(values)) ** 0.5
+
+        lefts_left = [b.bbox.left for b in left_blocks]
+        lefts_right = [b.bbox.left for b in right_blocks]
+        # Clusters must be tight along X (distinct columns)
+        if _std(lefts_left) > page.width * 0.08 or _std(lefts_right) > page.width * 0.08:
+            return 1, None
+
+        spacing = max_gap
         # Avoid absurd spacing relative to page width
         if spacing > max(1.0, page.width * 0.3):
             return 1, None
+
+        columns = 2 if len(large_gaps) == 1 else min(len(large_gaps) + 1, 3)
         return columns, spacing
     return 1, None
 
