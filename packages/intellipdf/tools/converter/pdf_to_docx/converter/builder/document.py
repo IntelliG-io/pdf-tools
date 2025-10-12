@@ -831,6 +831,21 @@ class DocumentBuilder:
             paragraph.line_spacing = 1.2
         paragraph.alignment = infer_alignment(block, section)
         paragraph.style = infer_style(block, numbering, self._font_samples)
+        # If style not inferred, promote centered short and larger text to headings
+        if not paragraph.style and paragraph.alignment == "center" and block.font_size:
+            baseline = (sum(self._font_samples) / len(self._font_samples)) if self._font_samples else block.font_size
+            if baseline > 0:
+                ratio = block.font_size / baseline
+                text_len = len(block.text.strip()) if block.text else 0
+                if text_len and text_len <= 80:
+                    if ratio >= 1.6:
+                        paragraph.style = "Heading2"
+                        paragraph.keep_lines = True
+                        paragraph.keep_with_next = True
+                    elif ratio >= 1.35:
+                        paragraph.style = "Heading3"
+                        paragraph.keep_lines = True
+                        paragraph.keep_with_next = True
         if paragraph.style and paragraph.style.startswith("Heading"):
             paragraph.keep_lines = True
             paragraph.keep_with_next = True

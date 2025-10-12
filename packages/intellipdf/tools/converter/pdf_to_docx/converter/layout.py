@@ -175,11 +175,24 @@ def infer_style(block: TextBlock, numbering: Numbering | None, font_samples: Seq
     if baseline <= 0:
         return None
     ratio = block.font_size / baseline
-    if ratio >= 1.8:
+    text_len = len(block.text.strip()) if block.text else 0
+    is_short = text_len > 0 and text_len <= 60
+    # Strong signals for Title/Headings
+    if is_short and ratio >= 1.9:
         return "Heading1"
-    if ratio >= 1.5:
+    if is_short and ratio >= 1.6:
         return "Heading2"
-    if ratio >= 1.3:
+    if is_short and ratio >= 1.35:
+        return "Heading3"
+    # Secondary cues: bold or centered and slightly larger
+    if is_short and (block.bold or block.italic):
+        if ratio >= 1.5:
+            return "Heading2"
+        if ratio >= 1.25:
+            return "Heading3"
+    # Centered blocks that are a bit larger can be headings
+    # We don't know alignment here, but builder will set alignment later; be conservative
+    if is_short and ratio >= 1.3:
         return "Heading3"
     return None
 
@@ -220,7 +233,7 @@ def blocks_to_paragraphs_static(
                 bold=block.bold or bold,
                 italic=block.italic or italic,
                 underline=block.underline or underline,
-                color=block.color or "000000",
+                color=block.color,
                 superscript=block.superscript,
                 subscript=block.subscript,
                 rtl=block.rtl,
