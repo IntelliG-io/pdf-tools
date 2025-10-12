@@ -1,0 +1,38 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    image: pdf-tools-backend:local
+    environment:
+      - PYTHONPATH=/app
+    networks:
+      - pdf-tools-local
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+    image: pdf-tools-frontend:local
+    depends_on:
+      - backend
+    networks:
+      - pdf-tools-local
+
+  gateway:
+    image: nginx:1.25-alpine
+    depends_on:
+      - backend
+      - frontend
+    volumes:
+      - ./deploy/nginx/local.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8080:80"
+    networks:
+      - pdf-tools-local
+
+networks:
+  pdf-tools-local:
+    driver: bridge

@@ -1,4 +1,4 @@
-name: Build and deploy backend
+name: Build and deploy application
 
 on:
   push:
@@ -20,11 +20,33 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Derive image name
-        id: image
+      - name: Derive image names
+        id: images
         run: |
           OWNER="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "name=${OWNER}/pdf-tools-backend" >> "$GITHUB_OUTPUT"
+          echo "backend=${OWNER}/pdf-tools-backend" >> "$GITHUB_OUTPUT"
+          echo "frontend=${OWNER}/pdf-tools-frontend" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve deployment target
+        id: target
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            main)
+              echo "tag=production" >> "$GITHUB_OUTPUT"
+              echo "host=${{ secrets.PRODUCTION_HOST }}" >> "$GITHUB_OUTPUT"
+              echo "compose=/opt/pdf-tools/prod/docker-compose.yml" >> "$GITHUB_OUTPUT"
+              ;;
+            dev)
+              echo "tag=staging" >> "$GITHUB_OUTPUT"
+              echo "host=${{ secrets.DEV_HOST }}" >> "$GITHUB_OUTPUT"
+              echo "compose=/opt/pdf-tools/dev/docker-compose.yml" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+              echo "host=" >> "$GITHUB_OUTPUT"
+              echo "compose=" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -36,35 +58,30 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push image
+      - name: Build and push backend image
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.images.outputs.backend }}
+          TAG: ${{ steps.target.outputs.tag }}
         run: |
-          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            TAG="production"
-          else
-            TAG="${GITHUB_REF_NAME}"
-          fi
-
           docker buildx build \
             --push \
-            --file Dockerfile \
+            --file docker/backend.Dockerfile \
             --tag "${IMAGE}:${GITHUB_SHA}" \
             --tag "${IMAGE}:${TAG}" \
             .
 
-      - name: Resolve deployment target
-        id: target
+      - name: Build and push frontend image
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.images.outputs.frontend }}
+          TAG: ${{ steps.target.outputs.tag }}
         run: |
-          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            echo "tag=production" >> "$GITHUB_OUTPUT"
-            echo "host=${{ secrets.PRODUCTION_HOST }}" >> "$GITHUB_OUTPUT"
-            echo "compose=/opt/pdf-tools/prod/docker-compose.yml" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-            echo "host=${{ secrets.DEV_HOST }}" >> "$GITHUB_OUTPUT"
-            echo "compose=/opt/pdf-tools/dev/docker-compose.yml" >> "$GITHUB_OUTPUT"
-          fi
+          docker buildx build \
+            --push \
+            --file docker/frontend.Dockerfile \
+            --build-arg VITE_API_BASE_URL=/api \
+            --tag "${IMAGE}:${GITHUB_SHA}" \
+            --tag "${IMAGE}:${TAG}" \
+            .
 
       - name: Deploy to droplet
         uses: appleboy/ssh-action@v1.0.0
@@ -75,8 +92,9 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             set -euo pipefail
-            export BACKEND_IMAGE="${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ steps.target.outputs.tag }}"
+            export BACKEND_IMAGE="${{ env.REGISTRY }}/${{ steps.images.outputs.backend }}:${{ steps.target.outputs.tag }}"
+            export FRONTEND_IMAGE="${{ env.REGISTRY }}/${{ steps.images.outputs.frontend }}:${{ steps.target.outputs.tag }}"
             docker login ${{ env.REGISTRY }} -u "${{ secrets.GHCR_USERNAME }}" -p "${{ secrets.GHCR_PASSWORD }}"
-            docker compose -f "${{ steps.target.outputs.compose }}" pull backend || true
-            docker compose -f "${{ steps.target.outputs.compose }}" up -d backend
+            docker compose -f "${{ steps.target.outputs.compose }}" pull backend frontend || true
+            docker compose -f "${{ steps.target.outputs.compose }}" up -d --remove-orphans
             docker image prune -f

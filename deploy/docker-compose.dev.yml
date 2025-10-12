@@ -5,5 +5,22 @@ services:
     restart: unless-stopped
     environment:
       - PYTHONPATH=/app
+    networks:
+      - pdf-tools-dev
     ports:
       - "127.0.0.1:9001:8000"
+
+  frontend:
+    image: ${FRONTEND_IMAGE:?Set FRONTEND_IMAGE}
+    container_name: pdf-tools-frontend-dev
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - pdf-tools-dev
+    ports:
+      - "127.0.0.1:9101:80"
+
+networks:
+  pdf-tools-dev:
+    name: pdf-tools-dev
