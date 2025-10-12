@@ -8,19 +8,15 @@ from typing import Iterable, List, Sequence
 from zipfile import ZipFile
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from intellipdf import extract_pages, get_split_info, merge_pdfs, split_pdf
 from intellipdf.split.exceptions import IntelliPDFSplitError, InvalidPageRangeError
 from intellipdf.split.utils import PageRange, parse_page_ranges
 
+app = FastAPI(title="IntelliPDF API", version="0.2.0")
 DOCS_PREFIX = "/api"
-app = FastAPI(
-    title="IntelliPDF API",
-    version="0.2.0",
-    docs_url=f"{DOCS_PREFIX}/docs",
-    openapi_url=f"{DOCS_PREFIX}/openapi.json",
-)
 
 
 def _cleanup_temp_dir(background_tasks: BackgroundTasks, temp_dir: TemporaryDirectory) -> None:
@@ -72,6 +68,23 @@ def _safe_filename(filename: str | None, default: str) -> str:
 async def health() -> dict[str, str]:
     """Lightweight health endpoint for uptime checks."""
     return {"status": "ok"}
+
+
+@app.get(f"{DOCS_PREFIX}/openapi.json", include_in_schema=False)
+async def prefixed_openapi() -> JSONResponse:
+    """Expose the OpenAPI schema under the gateway's ``/api`` prefix."""
+
+    return JSONResponse(app.openapi())
+
+
+@app.get(f"{DOCS_PREFIX}/docs", include_in_schema=False)
+async def prefixed_swagger_ui() -> HTMLResponse:
+    """Serve Swagger UI from the same ``/api`` prefix used by the gateway."""
+
+    return get_swagger_ui_html(
+        openapi_url=f"{DOCS_PREFIX}/openapi.json",
+        title=f"{app.title} - Swagger UI",
+    )
 
 
 @app.post("/merge", response_class=FileResponse)
