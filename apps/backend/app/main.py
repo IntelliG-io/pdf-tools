@@ -8,13 +8,19 @@ from typing import Iterable, List, Sequence
 from zipfile import ZipFile
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 
 from intellipdf import extract_pages, get_split_info, merge_pdfs, split_pdf
 from intellipdf.split.exceptions import IntelliPDFSplitError, InvalidPageRangeError
 from intellipdf.split.utils import PageRange, parse_page_ranges
 
-app = FastAPI(title="IntelliPDF API", version="0.2.0")
+DOCS_PREFIX = "/api"
+app = FastAPI(
+    title="IntelliPDF API",
+    version="0.2.0",
+    docs_url=f"{DOCS_PREFIX}/docs",
+    openapi_url=f"{DOCS_PREFIX}/openapi.json",
+)
 
 
 def _cleanup_temp_dir(background_tasks: BackgroundTasks, temp_dir: TemporaryDirectory) -> None:
