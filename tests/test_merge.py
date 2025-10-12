@@ -6,6 +6,8 @@ from typing import Callable
 
 import pytest
 
+from pypdf import PdfReader
+
 from intellipdf import (
     get_merge_info,
     merge_documents,
@@ -35,6 +37,53 @@ def test_merge_documents_helper(tmp_path: Path, sample_pdfs: list[Path]) -> None
     output = tmp_path / "merged.pdf"
     result = merge_documents(sample_pdfs, output)
     assert result == output
+
+
+def test_merge_pdfs_with_metadata_override(
+    tmp_path: Path,
+    sample_pdfs: list[Path],
+) -> None:
+    output = tmp_path / "metadata.pdf"
+
+    metadata = {
+        "title": "Merged Sample",
+        "author": "pytest",
+        "subject": "Testing",
+        "keywords": "one, two",
+    }
+
+    merge_pdfs(sample_pdfs, output, metadata=False, document_info=metadata)
+
+    info = get_merge_info(output)
+    assert info.metadata.get("/Title") == "Merged Sample"
+    assert info.metadata.get("/Author") == "pytest"
+    assert info.metadata.get("/Subject") == "Testing"
+    assert info.metadata.get("/Keywords") == "one, two"
+
+
+def test_merge_pdfs_adds_bookmarks(tmp_path: Path, sample_pdfs: list[Path]) -> None:
+    output = tmp_path / "bookmarks.pdf"
+
+    merge_pdfs(sample_pdfs, output, bookmarks=["First", "Second"])
+
+    reader = PdfReader(str(output))
+    outlines = reader.outline
+
+    titles: list[str] = []
+
+    def _collect(entries: list[object]) -> None:
+        for entry in entries:
+            if isinstance(entry, list):
+                _collect(entry)
+            else:
+                if hasattr(entry, "title"):
+                    titles.append(str(entry.title))
+                elif isinstance(entry, dict) and "/Title" in entry:
+                    titles.append(str(entry["/Title"]))
+
+    _collect(outlines)
+
+    assert titles[:2] == ["First", "Second"]
 
 
 def test_merge_pdfs_no_inputs(tmp_path: Path) -> None:

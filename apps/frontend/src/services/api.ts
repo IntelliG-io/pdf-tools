@@ -92,13 +92,25 @@ const requestBinary = async (path: string, formData: FormData): Promise<Blob> =>
 };
 
 // PDF merge operations
-export const mergePdfs = async (files: File[], _options?: any) => {
+export const mergePdfs = async (files: File[], options?: any) => {
   if (!files || files.length < 2) {
     throw new Error('At least two PDF files are required for merging');
   }
 
   const formData = new FormData();
   files.forEach((file) => formData.append('files', file));
+
+  if (options?.documentInfo && typeof options.documentInfo === 'object') {
+    try {
+      formData.append('document_info', JSON.stringify(options.documentInfo));
+    } catch (error) {
+      console.warn('Failed to serialise documentInfo for merge request:', error);
+    }
+  }
+
+  if (options?.addBookmarks) {
+    formData.append('add_bookmarks', 'true');
+  }
 
   const result = await requestBinary('/merge', formData);
   if (!(result as any).filename) {
