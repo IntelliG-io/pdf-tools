@@ -10,11 +10,6 @@ const createPdfBlob = (label: string) =>
     type: 'application/pdf',
   });
 
-const createDocxBlob = (label: string) =>
-  new Blob([`Dummy DOCX document for ${label}`], {
-    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  });
-
 const createZipBlob = (label: string) =>
   new Blob([`Dummy ZIP archive for ${label}`], {
     type: 'application/zip',
@@ -24,6 +19,45 @@ const createImageBlob = (label: string, format: string = 'png') =>
   new Blob([`Dummy image data for ${label}`], {
     type: `image/${format}`,
   });
+
+const toSnakeCase = (key: string) =>
+  key.replace(/([A-Z])/g, '_$1').toLowerCase();
+
+const preparePdfToDocxPayload = (
+  rawOptions?: any,
+): {
+  options: Record<string, unknown> | null;
+  metadata: Record<string, unknown> | null;
+} => {
+  if (!rawOptions || typeof rawOptions !== 'object') {
+    return { options: null, metadata: null };
+  }
+
+  const { metadata, ...rest } = rawOptions as Record<string, unknown>;
+
+  const normalisedOptions: Record<string, unknown> = {};
+  Object.entries(rest).forEach(([key, value]) => {
+    if (value === undefined || value === null) {
+      return;
+    }
+    const snakeKey = toSnakeCase(key);
+    normalisedOptions[snakeKey] = value;
+  });
+
+  const normalisedMetadata =
+    metadata && typeof metadata === 'object'
+      ? Object.fromEntries(
+          Object.entries(metadata as Record<string, unknown>).filter(
+            ([, value]) => value !== undefined && value !== null,
+          ),
+        )
+      : null;
+
+  return {
+    options: Object.keys(normalisedOptions).length > 0 ? normalisedOptions : null,
+    metadata: normalisedMetadata && Object.keys(normalisedMetadata).length > 0 ? normalisedMetadata : null,
+  };
+};
 
 const extractFilename = (header: string | null): string | undefined => {
   if (!header) {
@@ -293,8 +327,24 @@ export const convertPdfToDocx = async (file: File, options?: any) => {
     throw new Error('A PDF file is required for conversion');
   }
 
-  await delay(800);
-  return createDocxBlob('converted.docx');
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const payload = preparePdfToDocxPayload(options);
+  if (payload.options) {
+    formData.append('options', JSON.stringify(payload.options));
+  }
+  if (payload.metadata) {
+    formData.append('metadata', JSON.stringify(payload.metadata));
+  }
+
+  const result = await requestBinary('/convert/pdf-to-docx', formData);
+  if (!(result as any).filename) {
+    const name = file.name?.replace(/\.pdf$/i, '') || 'document';
+    (result as any).filename = `${name}.docx`;
+  }
+
+  return result;
 };
 
 // PDF page numbering operations

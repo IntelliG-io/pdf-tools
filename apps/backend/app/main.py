@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from json import JSONDecodeError
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,10 +19,19 @@ from fastapi import (
     Request,
     UploadFile,
 )
+from fastapi.concurrency import run_in_threadpool
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from intellipdf import extract_pages, get_split_info, merge_pdfs, split_pdf
+from intellipdf import (
+    ConversionMetadata,
+    ConversionOptions,
+    convert_pdf_to_docx,
+    extract_pages,
+    get_split_info,
+    merge_pdfs,
+    split_pdf,
+)
 from intellipdf.split.exceptions import IntelliPDFSplitError, InvalidPageRangeError
 from intellipdf.split.utils import PageRange, parse_page_ranges
 
@@ -72,6 +82,167 @@ def _safe_filename(filename: str | None, default: str) -> str:
 
     candidate = Path(filename).name
     return candidate or default
+
+
+def _parse_json_mapping(raw_value: str | None, *, field_name: str) -> dict[str, object] | None:
+    """Parse an optional JSON encoded mapping from a multipart form field."""
+
+    if raw_value is None:
+        return None
+
+    try:
+        payload = json.loads(raw_value)
+    except JSONDecodeError as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=400, detail=f"{field_name} must be valid JSON.") from exc
+
+    if payload is None:
+        return None
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a JSON object.")
+
+    return payload
+
+
+def _coerce_bool(value: object, *, field: str) -> bool:
+    """Convert common truthy/falsey representations into a boolean."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "y", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "n", "off"}:
+            return False
+
+    raise HTTPException(status_code=400, detail=f"'{field}' must be a boolean value.")
+
+
+def _parse_page_numbers(value: object) -> list[int]:
+    """Normalise page number selections to zero-based indices."""
+
+    raw_items: list[object]
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.split(",") if item.strip()]
+    elif isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, str)):
+        raw_items = list(value)
+    else:
+        raise HTTPException(status_code=400, detail="'page_numbers' must be a list of integers.")
+
+    if not raw_items:
+        raise HTTPException(status_code=400, detail="'page_numbers' must contain at least one entry.")
+
+    try:
+        parsed = [int(item) for item in raw_items]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="'page_numbers' must be integers.") from exc
+
+    if all(number >= 1 for number in parsed) and 0 not in parsed:
+        parsed = [number - 1 for number in parsed]
+
+    if any(number < 0 for number in parsed):
+        raise HTTPException(status_code=400, detail="'page_numbers' must be positive integers.")
+
+    return parsed
+
+
+def _build_conversion_options(payload: dict[str, object] | None) -> ConversionOptions | None:
+    """Translate user supplied options into :class:`ConversionOptions`."""
+
+    if not payload:
+        return None
+
+    options = ConversionOptions()
+    updated = False
+
+    page_numbers = payload.get("page_numbers") or payload.get("pageNumbers")
+    if page_numbers is not None:
+        options.page_numbers = _parse_page_numbers(page_numbers)
+        updated = True
+
+    bool_fields = {
+        "strip_whitespace": "stripWhitespace",
+        "stream_pages": "streamPages",
+        "include_outline_toc": "includeOutlineToc",
+        "generate_toc_field": "generateTocField",
+        "footnotes_as_endnotes": "footnotesAsEndnotes",
+    }
+
+    for canonical, alias in bool_fields.items():
+        raw_value = payload.get(canonical)
+        if raw_value is None:
+            raw_value = payload.get(alias)
+        if raw_value is None:
+            continue
+        setattr(options, canonical, _coerce_bool(raw_value, field=canonical))
+        updated = True
+
+    return options if updated else None
+
+
+def _parse_datetime(value: object, *, field: str) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise HTTPException(status_code=400, detail=f"'{field}' must be an ISO formatted datetime.") from exc
+    raise HTTPException(status_code=400, detail=f"'{field}' must be an ISO formatted datetime string.")
+
+
+def _build_conversion_metadata(payload: dict[str, object] | None) -> ConversionMetadata | None:
+    if not payload:
+        return None
+
+    metadata = ConversionMetadata()
+    updated = False
+
+    simple_fields = {
+        "title": "title",
+        "author": "author",
+        "subject": "subject",
+        "description": "description",
+        "language": "language",
+        "revision": "revision",
+        "last_modified_by": "lastModifiedBy",
+    }
+
+    for canonical, alias in simple_fields.items():
+        raw_value = payload.get(canonical)
+        if raw_value is None:
+            raw_value = payload.get(alias)
+        if raw_value is None:
+            continue
+        setattr(metadata, canonical, str(raw_value))
+        updated = True
+
+    for field_name, alias in {"created": "created", "modified": "modified"}.items():
+        raw_value = payload.get(field_name)
+        if raw_value is None:
+            raw_value = payload.get(alias)
+        if raw_value is None:
+            continue
+        setattr(metadata, field_name, _parse_datetime(raw_value, field=field_name))
+        updated = True
+
+    keywords = payload.get("keywords")
+    if keywords is None:
+        keywords = payload.get("keywordList")
+    if keywords is not None:
+        if isinstance(keywords, str):
+            parts = [part.strip() for part in keywords.split(",") if part.strip()]
+        elif isinstance(keywords, Iterable) and not isinstance(keywords, (bytes, bytearray)):
+            parts = [str(part).strip() for part in keywords if str(part).strip()]
+        else:
+            raise HTTPException(status_code=400, detail="'keywords' must be a list of strings or comma separated string.")
+        metadata.keywords = parts or None
+        updated = updated or bool(parts)
+
+    return metadata if updated else None
 
 
 @app.get("/health", response_class=JSONResponse)
@@ -392,6 +563,73 @@ async def extract_all_pages(
         archive_path,
         media_type="application/zip",
         filename="all_pages.zip",
+    )
+
+
+@app.post(
+    "/convert/pdf-to-docx",
+    response_class=FileResponse,
+    summary="Convert a PDF document to DOCX",
+    response_description="DOCX document converted from the uploaded PDF.",
+)
+async def convert_pdf_to_docx_endpoint(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(..., description="Source PDF to convert."),
+    options: str | None = Form(
+        None,
+        description="Optional JSON object controlling conversion behaviour.",
+    ),
+    metadata: str | None = Form(
+        None,
+        description="Optional JSON object providing DOCX metadata overrides.",
+    ),
+) -> FileResponse:
+    """Convert an uploaded PDF into a DOCX document."""
+
+    temp_dir = TemporaryDirectory()
+    temp_path = Path(temp_dir.name)
+    input_path = temp_path / _safe_filename(file.filename, "document.pdf")
+    await _store_upload(file, input_path)
+
+    conversion_options = _build_conversion_options(
+        _parse_json_mapping(options, field_name="options")
+    )
+    conversion_metadata = _build_conversion_metadata(
+        _parse_json_mapping(metadata, field_name="metadata")
+    )
+
+    output_filename = input_path.with_suffix(".docx").name
+    output_path = temp_path / output_filename
+
+    try:
+        result = await run_in_threadpool(
+            convert_pdf_to_docx,
+            input_path,
+            output_path,
+            options=conversion_options,
+            metadata=conversion_metadata,
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - defensive conversion to HTTP error
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    _cleanup_temp_dir(background_tasks, temp_dir)
+
+    headers = {
+        "X-IntelliPDF-Docx-Page-Count": str(result.page_count),
+        "X-IntelliPDF-Docx-Paragraph-Count": str(result.paragraph_count),
+        "X-IntelliPDF-Docx-Word-Count": str(result.word_count),
+        "X-IntelliPDF-Docx-Line-Count": str(result.line_count),
+    }
+
+    return FileResponse(
+        result.output_path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=output_filename,
+        headers=headers,
     )
 
 
