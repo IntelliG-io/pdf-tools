@@ -31,7 +31,7 @@ from intellipdf import (
     merge_pdfs,
     split_pdf,
 )
-from intellipdf.pdf2docx.converter import PdfToDocxConverter
+from intellipdf.pdf2docx2.converter import PdfToDocxConverter
 from intellipdf.split.exceptions import IntelliPDFSplitError, InvalidPageRangeError
 from intellipdf.split.utils import PageRange, parse_page_ranges
 
