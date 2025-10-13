@@ -1,9 +1,9 @@
-"""Validation utilities for the :mod:`intellipdf.merge` package."""
+"""Validation helpers for the :mod:`intellipdf.merge` package."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict
 
@@ -26,12 +26,7 @@ class PDFInfo:
 
 
 def validate_pdf(path: PathLike) -> bool:
-    """Return ``True`` if *path* points to a valid, readable PDF.
-
-    ``PdfValidationError`` is raised if the file cannot be read or does
-    not contain any pages. Callers can rely on the return value being
-    ``True`` if the function completes without error.
-    """
+    """Return ``True`` if *path* points to a valid, readable PDF."""
 
     pdf_path = ensure_path(path)
     LOGGER.debug("Validating PDF at %s", pdf_path)
@@ -45,12 +40,8 @@ def validate_pdf(path: PathLike) -> bool:
         try:
             reader.decrypt("")
         except Exception as exc:  # pragma: no cover
-            LOGGER.error(
-                "Encrypted PDF %s cannot be decrypted: %s", pdf_path, exc
-            )
-            raise PdfValidationError(
-                "Encrypted PDF cannot be decrypted"
-            ) from exc
+            LOGGER.error("Encrypted PDF %s cannot be decrypted: %s", pdf_path, exc)
+            raise PdfValidationError("Encrypted PDF cannot be decrypted") from exc
 
     if len(reader.pages) == 0:
         LOGGER.error("PDF %s contains no pages", pdf_path)

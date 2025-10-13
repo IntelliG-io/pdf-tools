@@ -1,4 +1,4 @@
-"""Optional optimisation helpers for :mod:`intellipdf.split`."""
+"""Optional optimisation helpers for split PDFs."""
 
 from __future__ import annotations
 
@@ -13,16 +13,7 @@ LOGGER = logging.getLogger("intellipdf.split")
 
 
 def optimize_pdf(source: str | Path, destination: str | Path) -> bool:
-    """Optimise a PDF using :command:`qpdf` if it is available.
-
-    Args:
-        source: Path to the input PDF file.
-        destination: Path to write the optimised PDF to.
-
-    Returns:
-        ``True`` if optimisation was performed, otherwise ``False`` when qpdf is
-        not available.
-    """
+    """Optimise a PDF using :command:`qpdf` if it is available."""
 
     qpdf_executable = shutil.which("qpdf")
     if not qpdf_executable:
@@ -46,3 +37,6 @@ def optimize_pdf(source: str | Path, destination: str | Path) -> bool:
         return False
 
     return True
+
+
+__all__ = ["optimize_pdf"]

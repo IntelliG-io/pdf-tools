@@ -23,9 +23,7 @@ def _load_reader(path: Path) -> PdfReader:
             reader.decrypt("")
         except Exception as exc:  # pragma: no cover - decrypt errors vary
             LOGGER.error("Failed to decrypt PDF %s: %s", path, exc)
-            raise PdfMergeError(
-                f"Unable to decrypt encrypted PDF: {path}"
-            ) from exc
+            raise PdfMergeError(f"Unable to decrypt encrypted PDF: {path}") from exc
     return reader
 
 
@@ -37,18 +35,7 @@ def merge_pdfs(
     document_info: Mapping[str, object] | None = None,
     bookmarks: Sequence[str] | None = None,
 ) -> Path:
-    """Merge *inputs* into *output* and return the resulting path.
-
-    Args:
-        inputs: An iterable of file paths to merge. They must point to
-            readable PDF files.
-        output: The output file path that will contain the merged PDF.
-        metadata: When ``True`` metadata from the first readable input
-            file is copied into the merged document.
-
-    Raises:
-        PdfMergeError: If merging fails for any reason.
-    """
+    """Merge *inputs* into *output* and return the resulting path."""
 
     pdf_paths = ensure_iterable(inputs)
     if not pdf_paths:
@@ -95,9 +82,7 @@ def merge_pdfs(
             except PdfMergeError:
                 raise
             except Exception as exc:  # pragma: no cover
-                LOGGER.warning(
-                    "Failed to capture metadata from %s: %s", pdf_path, exc
-                )
+                LOGGER.warning("Failed to capture metadata from %s: %s", pdf_path, exc)
 
     metadata_to_apply: dict[str, str] | None = None
     if document_info:
@@ -114,7 +99,7 @@ def merge_pdfs(
             string_value = str(value).strip()
             if not string_value:
                 continue
-            pdf_key = metadata_key_map.get(key.lower(), None)
+            pdf_key = metadata_key_map.get(str(key).lower())
             if pdf_key is None:
                 pdf_key = key if str(key).startswith("/") else f"/{key}"
             metadata_to_apply[pdf_key] = string_value
@@ -138,9 +123,7 @@ def merge_pdfs(
             writer.write(output_handle)
     except Exception as exc:  # pragma: no cover - IO errors vary
         LOGGER.error("Failed to write merged PDF to %s: %s", output_path, exc)
-        raise PdfMergeError(
-            f"Failed to write merged PDF to {output_path}"
-        ) from exc
+        raise PdfMergeError(f"Failed to write merged PDF to {output_path}") from exc
 
     LOGGER.info("Merged %d PDFs into %s", len(pdf_paths), output_path)
     return output_path

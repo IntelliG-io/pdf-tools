@@ -20,3 +20,10 @@ class InvalidPageRangeError(IntelliPDFSplitError):
         self.ranges = list(ranges)
         message = f"Invalid or empty page ranges provided: {self.ranges!r}"
         super().__init__(message)
+
+
+__all__ = [
+    "IntelliPDFSplitError",
+    "PDFValidationError",
+    "InvalidPageRangeError",
+]

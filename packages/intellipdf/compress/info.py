@@ -1,4 +1,4 @@
-"""Information utilities for the :mod:`intellipdf.compress` package."""
+"""Metadata helpers describing PDFs prior to compression."""
 
 from __future__ import annotations
 
@@ -75,3 +75,6 @@ def get_compression_info(path: str | os.PathLike[str]) -> CompressionInfo:
     )
     _LOGGER.debug("Compression info for %s: %s", pdf_path, info)
     return info
+
+
+__all__ = ["CompressionInfo", "get_compression_info"]

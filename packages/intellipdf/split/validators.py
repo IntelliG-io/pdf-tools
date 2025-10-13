@@ -1,4 +1,4 @@
-"""Validation helpers for the :mod:`intellipdf.split` package."""
+"""Validation helpers for :mod:`intellipdf.split`."""
 
 from __future__ import annotations
 
@@ -12,18 +12,7 @@ from .utils import coerce_path
 
 
 def validate_pdf(path: str | Path) -> bool:
-    """Validate that the given file is a readable PDF document.
-
-    Args:
-        path: Path to the PDF file to validate.
-
-    Returns:
-        ``True`` if validation succeeds.
-
-    Raises:
-        PDFValidationError: If the document cannot be read or fails validation
-            checks.
-    """
+    """Validate that the given file is a readable PDF document."""
 
     pdf_path = coerce_path(path)
     if not pdf_path.exists():
@@ -65,3 +54,6 @@ def get_pdf_info(path: str | Path) -> Dict[str, Any]:
     }
 
     return info
+
+
+__all__ = ["validate_pdf", "get_pdf_info"]

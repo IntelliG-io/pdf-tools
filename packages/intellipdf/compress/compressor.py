@@ -1,4 +1,4 @@
-"""Compression engine for the :mod:`intellipdf.compress` package."""
+"""Core compression routines used by the IntelliPDF compressor."""
 
 from __future__ import annotations
 
@@ -114,10 +114,10 @@ def _downsample_page_images(page, level: CompressionLevel) -> None:  # pragma: n
         name = getattr(image, "name", None)
         if not data or not name:
             continue
-        xobject = xobjects.get(name) if hasattr(xobjects, 'get') else None
+        xobject = xobjects.get(name) if hasattr(xobjects, "get") else None
         if xobject is None:
             continue
-        xobject_obj = xobject.get_object() if hasattr(xobject, 'get_object') else xobject
+        xobject_obj = xobject.get_object() if hasattr(xobject, "get_object") else xobject
         try:
             with Image.open(io.BytesIO(data)) as img:  # type: ignore[name-defined]
                 new_size = (
@@ -132,7 +132,7 @@ def _downsample_page_images(page, level: CompressionLevel) -> None:  # pragma: n
                 save_kwargs = {"quality": level.image_quality} if format_hint == "JPEG" else {}
                 resized.save(output, format=format_hint, **save_kwargs)
                 output.seek(0)
-                if hasattr(xobject_obj, '_data'):
+                if hasattr(xobject_obj, "_data"):
                     xobject_obj._data = output.read()
         except Exception as exc:  # pragma: no cover - optional path
             _LOGGER.debug("Skipping image downsampling due to error: %s", exc)
@@ -198,3 +198,11 @@ def compress_pdf(
         raise CompressionError(f"Compression failed: {exc}") from exc
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+__all__ = [
+    "CompressionLevel",
+    "CompressionResult",
+    "CompressionLevelName",
+    "compress_pdf",
+]

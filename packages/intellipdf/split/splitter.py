@@ -13,7 +13,13 @@ from pypdf import PdfReader, PdfWriter
 
 from .exceptions import IntelliPDFSplitError, InvalidPageRangeError
 from .optimizers import optimize_pdf
-from .utils import PageRange, build_output_filename, coerce_path, normalize_pages, parse_page_ranges
+from .utils import (
+    PageRange,
+    build_output_filename,
+    coerce_path,
+    normalize_pages,
+    parse_page_ranges,
+)
 from .validators import validate_pdf
 
 LOGGER = logging.getLogger("intellipdf.split")
@@ -55,18 +61,7 @@ def split_pdf(
     ranges: str | Sequence[object] | None = None,
     pages: Sequence[int | str] | None = None,
 ) -> List[Path]:
-    """Split a PDF document according to the requested mode.
-
-    Args:
-        input: Source PDF file.
-        output_dir: Directory in which to write generated files.
-        mode: Either ``"range"`` (default) or ``"pages"``.
-        ranges: Range specification used when ``mode="range"``.
-        pages: Explicit page numbers used when ``mode="pages"``.
-
-    Returns:
-        A list of paths to the generated PDF files.
-    """
+    """Split a PDF document according to the requested mode."""
 
     input_path = coerce_path(input)
     output_path = coerce_path(output_dir)
@@ -135,3 +130,6 @@ def extract_pages(
     _write_document(writer, output_path, metadata)
 
     return output_path
+
+
+__all__ = ["split_pdf", "extract_pages"]

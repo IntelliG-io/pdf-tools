@@ -1,4 +1,4 @@
-"""External optimization backend integration."""
+"""Helper utilities for executing optional compression backends."""
 
 from __future__ import annotations
 
@@ -96,8 +96,18 @@ def run_backend(backend: Backend, source: Path, output: Path, level: str) -> Non
         command = build_qpdf_command(backend.executable, source, output, level)
     elif backend.type is BackendType.GHOSTSCRIPT:
         command = build_ghostscript_command(backend.executable, source, output, level)
-    else:
+    else:  # pragma: no cover - defensive guard
         raise ValueError(f"Unsupported backend: {backend.type}")
 
     _LOGGER.info("Running %s backend for compression", backend.type.value)
     run_subprocess(command)
+
+
+__all__ = [
+    "Backend",
+    "BackendType",
+    "detect_backend",
+    "build_qpdf_command",
+    "build_ghostscript_command",
+    "run_backend",
+]

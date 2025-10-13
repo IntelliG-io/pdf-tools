@@ -1,4 +1,4 @@
-"""Optimization helpers for the :mod:`intellipdf.merge` package."""
+"""Optional optimization helpers for merged PDF documents."""
 
 from __future__ import annotations
 
@@ -19,12 +19,7 @@ def _qpdf_available() -> str | None:
 
 
 def optimize_pdf(input: PathLike, output: PathLike) -> Path:
-    """Optimize a PDF using ``qpdf`` when available.
-
-    If ``qpdf`` is not installed the input is copied to the output path
-    and a debug message is emitted. This keeps the function safe to
-    call in environments where optional dependencies are not available.
-    """
+    """Optimize a PDF using ``qpdf`` when available."""
 
     input_path = ensure_path(input)
     output_path = ensure_path(output)
@@ -34,16 +29,12 @@ def optimize_pdf(input: PathLike, output: PathLike) -> Path:
 
     qpdf_executable = _qpdf_available()
     if not qpdf_executable:
-        LOGGER.debug(
-            "qpdf not available; copying %s to %s", input_path, output_path
-        )
+        LOGGER.debug("qpdf not available; copying %s to %s", input_path, output_path)
         try:
             shutil.copyfile(input_path, output_path)
         except Exception as exc:  # pragma: no cover - IO errors vary
             LOGGER.error("Failed to copy PDF during optimization: %s", exc)
-            raise PdfOptimizationError(
-                "Failed to copy PDF during optimization"
-            ) from exc
+            raise PdfOptimizationError("Failed to copy PDF during optimization") from exc
         return output_path
 
     command = [

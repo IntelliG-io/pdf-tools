@@ -1,4 +1,4 @@
-"""Utility helpers for the :mod:`intellipdf.split` package."""
+"""Utility helpers used by :mod:`intellipdf.split`."""
 
 from __future__ import annotations
 
@@ -53,21 +53,7 @@ def parse_page_ranges(
     *,
     total_pages: int,
 ) -> List[PageRange]:
-    """Parse ``ranges`` into a list of :class:`PageRange` instances.
-
-    Args:
-        ranges: Page range specification expressed as a comma-separated string,
-            a sequence of strings, integers or pairs, or ``None``.
-        total_pages: Total number of pages in the source PDF, used to validate
-            the resulting ranges.
-
-    Raises:
-        InvalidPageRangeError: If the ranges cannot be parsed or validate.
-
-    Returns:
-        A list of :class:`PageRange` objects sorted in the order they were
-        supplied.
-    """
+    """Parse ``ranges`` into a list of :class:`PageRange` instances."""
 
     if ranges is None:
         raise InvalidPageRangeError([ranges])
@@ -141,3 +127,12 @@ def build_output_filename(base_name: str, part: PageRange | int) -> str:
     else:
         suffix = f"page_{part}"
     return f"{safe_base}_{suffix}.pdf"
+
+
+__all__ = [
+    "PageRange",
+    "coerce_path",
+    "parse_page_ranges",
+    "normalize_pages",
+    "build_output_filename",
+]

@@ -13,3 +13,10 @@ class PdfValidationError(Exception):
 
 class PdfOptimizationError(Exception):
     """Raised when optimization cannot be performed."""
+
+
+__all__ = [
+    "PdfMergeError",
+    "PdfValidationError",
+    "PdfOptimizationError",
+]

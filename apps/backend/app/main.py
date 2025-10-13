@@ -31,9 +31,13 @@ from intellipdf import (
     merge_pdfs,
     split_pdf,
 )
-from intellipdf.pdf2docx2.converter import PdfToDocxConverter
-from intellipdf.split.exceptions import IntelliPDFSplitError, InvalidPageRangeError
-from intellipdf.split.utils import PageRange, parse_page_ranges
+from intellipdf.pdf2docx import PdfToDocxConverter
+from intellipdf.split import (
+    IntelliPDFSplitError,
+    InvalidPageRangeError,
+    PageRange,
+    parse_page_ranges,
+)
 
 app = FastAPI(title="IntelliPDF API", version="0.2.0")
 DOCS_PREFIX = "/api"

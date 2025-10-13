@@ -1,4 +1,4 @@
-"""Utility helpers for the :mod:`intellipdf.compress` package."""
+"""Utility helpers used across :mod:`intellipdf.compress`."""
 
 from __future__ import annotations
 
@@ -43,17 +43,7 @@ def run_subprocess(
     env: MutableMapping[str, str] | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Run *command* capturing output.
-
-    Parameters
-    ----------
-    command:
-        Command and arguments to execute.
-    env:
-        Optional environment overrides.
-    check:
-        Whether to raise :class:`subprocess.CalledProcessError` on non-zero exit.
-    """
+    """Run *command* capturing output."""
 
     _LOGGER.debug("Executing command: %s", " ".join(command))
     completed = subprocess.run(
@@ -91,3 +81,13 @@ def merge_dicts(*dicts: Mapping[str, str]) -> dict[str, str]:
     for mapping in dicts:
         merged.update(mapping)
     return merged
+
+
+__all__ = [
+    "resolve_path",
+    "ensure_parent_dir",
+    "which",
+    "run_subprocess",
+    "sizeof_fmt",
+    "merge_dicts",
+]

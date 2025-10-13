@@ -13,3 +13,10 @@ class InvalidPDFError(PDFCompressXError):
 
 class CompressionError(PDFCompressXError):
     """Raised when compression fails or produces an invalid document."""
+
+
+__all__ = [
+    "PDFCompressXError",
+    "InvalidPDFError",
+    "CompressionError",
+]

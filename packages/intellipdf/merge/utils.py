@@ -1,4 +1,4 @@
-"""Utility helpers for the :mod:`intellipdf.merge` package."""
+"""Utility helpers for :mod:`intellipdf.merge`."""
 
 from __future__ import annotations
 
@@ -9,19 +9,12 @@ PathLike = Union[str, Path]
 
 
 def ensure_path(path: PathLike) -> Path:
-    """Return a :class:`~pathlib.Path` instance for *path*.
-
-    This helper normalises any string-like path and expands user-home
-    references. Relative paths are resolved relative to the current
-    working directory to avoid surprises when running in subprocesses or
-    CI environments.
-    """
+    """Return a :class:`~pathlib.Path` instance for *path*."""
 
     resolved = Path(path).expanduser()
     try:
         return resolved.resolve(strict=False)
-    except FileNotFoundError:
-        # Should not happen with strict=False, but keep for completeness.
+    except FileNotFoundError:  # pragma: no cover - defensive
         return resolved
 
 

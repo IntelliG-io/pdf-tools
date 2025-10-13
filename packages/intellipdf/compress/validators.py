@@ -1,4 +1,4 @@
-"""Validation helpers for PDF documents."""
+"""Validation helpers for :mod:`intellipdf.compress`."""
 
 from __future__ import annotations
 
@@ -37,3 +37,6 @@ def validate_pdf(path: str | Path, *, use_external: bool = True) -> None:
         if backend and backend.type is BackendType.QPDF:
             _LOGGER.debug("Running qpdf --check on %s", pdf_path)
             run_subprocess([backend.executable, "--check", str(pdf_path)], check=True)
+
+
+__all__ = ["validate_pdf"]
