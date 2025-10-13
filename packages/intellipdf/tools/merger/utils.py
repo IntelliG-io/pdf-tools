@@ -1,4 +1,4 @@
-"""Utility helpers for the :mod:`intellipdf.merge` package."""
+"""Utility helpers for :mod:`intellipdf.tools.merger`."""
 
 from __future__ import annotations
 

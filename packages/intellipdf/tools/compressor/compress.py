@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ...compress import CompressionResult, compress_pdf
+from . import CompressionResult, compress_pdf
 from ...core.utils import get_logger
 from ..common.interfaces import BaseTool
 from ..common.pipeline import register_tool

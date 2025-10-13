@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ....core.parser import PDFParser
-from ....pdf2docx.primitives import PdfDocument, Page
+from .primitives import PdfDocument, Page
 
 
 class PdfToDocxParserAdapter:

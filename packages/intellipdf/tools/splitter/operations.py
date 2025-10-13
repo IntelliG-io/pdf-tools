@@ -1,4 +1,4 @@
-"""Splitting and extraction utilities for :mod:`intellipdf`."""
+"""Splitting and extraction utilities for :mod:`intellipdf.tools.splitter`."""
 
 from __future__ import annotations
 

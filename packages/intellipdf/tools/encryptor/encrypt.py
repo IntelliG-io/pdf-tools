@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ...core.utils import get_logger
-from ...security import PdfSecurityError, protect_pdf, unprotect_pdf
+from .api import PdfSecurityError, protect_pdf, unprotect_pdf
 from ..common.interfaces import BaseTool
 from ..common.pipeline import register_tool
 

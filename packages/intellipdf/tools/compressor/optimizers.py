@@ -1,4 +1,4 @@
-"""External optimization backend integration."""
+"""External optimization backend integration for :mod:`intellipdf.tools.compressor`."""
 
 from __future__ import annotations
 

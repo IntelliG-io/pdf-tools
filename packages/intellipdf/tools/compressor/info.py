@@ -1,4 +1,4 @@
-"""Information utilities for the :mod:`intellipdf.compress` package."""
+"""Information utilities for the :mod:`intellipdf.tools.compressor` package."""
 
 from __future__ import annotations
 

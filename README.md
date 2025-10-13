@@ -124,7 +124,7 @@ conversion = convert_document(source, Path("document.docx"))
 print(conversion.output_path, conversion.tagged_pdf)
 
 # Using primitives that might come from a custom parser.
-from intellipdf.pdf2docx import BoundingBox, Page, PdfDocument, TextBlock
+from intellipdf.tools.converter.pdf_to_docx import BoundingBox, Page, PdfDocument, TextBlock
 
 page = Page(
     number=0,

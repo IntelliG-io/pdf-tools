@@ -15,9 +15,9 @@ from intellipdf import (
     optimize_merge_pdf,
     validate_merge_pdf,
 )
-from intellipdf.merge import merger
-from intellipdf.merge.exceptions import PdfMergeError, PdfValidationError
-from intellipdf.merge import utils as merge_utils
+from intellipdf.tools.merger import merger
+from intellipdf.tools.merger.exceptions import PdfMergeError, PdfValidationError
+from intellipdf.tools.merger import utils as merge_utils
 
 
 def test_merge_pdfs_creates_output(tmp_path: Path, sample_pdfs: list[Path]) -> None:
@@ -103,7 +103,7 @@ def test_optimize_pdf(
 
     if not qpdf_present:
         monkeypatch.setattr(
-            "intellipdf.merge.optimizers._qpdf_available",
+            "intellipdf.tools.merger.optimizers._qpdf_available",
             lambda: None,
         )
     else:
@@ -117,11 +117,11 @@ def test_optimize_pdf(
             return SimpleNamespace(returncode=0, stderr="")
 
         monkeypatch.setattr(
-            "intellipdf.merge.optimizers._qpdf_available",
+            "intellipdf.tools.merger.optimizers._qpdf_available",
             lambda: "qpdf",
         )
         monkeypatch.setattr(
-            "intellipdf.merge.optimizers.subprocess.run",
+            "intellipdf.tools.merger.optimizers.subprocess.run",
             fake_run,
         )
 
@@ -185,7 +185,7 @@ def test_load_reader_handles_encrypted(monkeypatch: pytest.MonkeyPatch, tmp_path
         def decrypt(self, password: str) -> None:
             self.decrypt_called = password  # type: ignore[attr-defined]
 
-    monkeypatch.setattr("intellipdf.merge.merger.PdfReader", lambda path: DummyReader())
+    monkeypatch.setattr("intellipdf.tools.merger.merger.PdfReader", lambda path: DummyReader())
 
     reader = merger._load_reader(sample)
     assert isinstance(reader, DummyReader)

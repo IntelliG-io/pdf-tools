@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from ....core.utils import get_logger
-from ....pdf2docx.converter import ConversionMetadata, ConversionOptions, ConversionResult
-from ....pdf2docx import convert_pdf_to_docx
 from ...common.interfaces import BaseTool
 from ...common.pipeline import register_tool
+from . import convert_pdf_to_docx
+from .converter import ConversionMetadata, ConversionOptions, ConversionResult
 from .parser_adapter import PdfToDocxParserAdapter
 
 LOGGER = get_logger("intellipdf.tools.convert.docx")

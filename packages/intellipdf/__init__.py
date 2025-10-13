@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from . import compress, merge, pdf2docx, security, split
-from .compress import (
+from .tools import compressor as compress
+from .tools import encryptor as security
+from .tools import merger as merge
+from .tools import splitter as split
+from .tools.converter import pdf_to_docx
+from .tools.compressor import (
     CompressionError,
     CompressionInfo,
     CompressionLevel,
@@ -17,7 +22,20 @@ from .compress import (
     get_compression_info,
     validate_pdf as validate_compression_pdf,
 )
-from .merge import (
+from .tools.converter.pdf_to_docx import (
+    ConversionMetadata,
+    ConversionOptions,
+    ConversionResult,
+    PdfToDocxConverter,
+    convert_pdf_to_docx,
+)
+from .tools.encryptor import (
+    PdfSecurityError,
+    is_pdf_encrypted,
+    protect_pdf,
+    unprotect_pdf,
+)
+from .tools.merger import (
     PDFInfo,
     PdfMergeError,
     PdfOptimizationError,
@@ -27,31 +45,27 @@ from .merge import (
     validate_pdf as validate_merge_pdf,
     get_pdf_info as get_merge_info,
 )
-from .security import (
-    PdfSecurityError,
-    is_pdf_encrypted,
-    protect_pdf,
-    unprotect_pdf,
-)
-from .split import (
+from .tools.splitter import (
     extract_pages,
     split_pdf,
     validate_pdf as validate_split_pdf,
     get_pdf_info as get_split_info,
 )
-from .split.optimizers import optimize_pdf as optimize_split_pdf
-from .pdf2docx import (
-    ConversionMetadata,
-    ConversionOptions,
-    ConversionResult,
-    PdfToDocxConverter,
-    convert_pdf_to_docx,
-)
+from .tools.splitter.optimizers import optimize_pdf as optimize_split_pdf
 from .tools import load_builtin_plugins
 from .tools.common.interfaces import ConversionContext
 from .tools.common.pipeline import ToolRegistry, register_tool, registry
 
+pdf2docx = pdf_to_docx
+
 load_builtin_plugins()
+
+# Backwards-compatible module aliases for deprecated top-level packages.
+sys.modules.setdefault(__name__ + ".compress", compress)
+sys.modules.setdefault(__name__ + ".merge", merge)
+sys.modules.setdefault(__name__ + ".split", split)
+sys.modules.setdefault(__name__ + ".security", security)
+sys.modules.setdefault(__name__ + ".pdf2docx", pdf2docx)
 
 __all__ = [
     "compress",

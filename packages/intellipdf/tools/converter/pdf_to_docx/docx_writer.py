@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ....pdf2docx.docx import write_docx
+from .docx import write_docx
 
 
 class DocxWriter:

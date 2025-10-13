@@ -1,4 +1,4 @@
-"""Optional optimisation helpers for :mod:`intellipdf.split`."""
+"""Optional optimisation helpers for :mod:`intellipdf.tools.splitter`."""
 
 from __future__ import annotations
 

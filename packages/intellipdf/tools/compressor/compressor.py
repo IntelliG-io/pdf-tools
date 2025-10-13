@@ -1,4 +1,4 @@
-"""Compression engine for the :mod:`intellipdf.compress` package."""
+"""Compression engine powering :mod:`intellipdf.tools.compressor`."""
 
 from __future__ import annotations
 

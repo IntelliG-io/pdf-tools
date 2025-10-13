@@ -1,4 +1,4 @@
-"""Validation helpers for the :mod:`intellipdf.split` package."""
+"""Validation helpers for :mod:`intellipdf.tools.splitter`."""
 
 from __future__ import annotations
 

@@ -12,7 +12,7 @@ from ...core.utils import get_logger
 from ...core.validator import ensure_output_parent
 from ..common.interfaces import BaseTool
 from ..common.pipeline import register_tool
-from ...split.utils import build_output_filename, normalize_pages, parse_page_ranges
+from .utils import build_output_filename, normalize_pages, parse_page_ranges
 
 LOGGER = get_logger("intellipdf.tools.split")
 

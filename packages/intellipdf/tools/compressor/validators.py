@@ -1,4 +1,4 @@
-"""Validation helpers for PDF documents."""
+"""Validation helpers for PDFs consumed by :mod:`intellipdf.tools.compressor`."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Custom exceptions raised by :mod:`intellipdf.split`."""
+"""Custom exceptions raised by :mod:`intellipdf.tools.splitter`."""
 
 from __future__ import annotations
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from ....pdf2docx.converter.layout import collect_page_placements
+from .converter.layout import collect_page_placements
 
 
 class LayoutAnalyzer:

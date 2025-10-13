@@ -1,4 +1,4 @@
-"""Validation utilities for the :mod:`intellipdf.merge` package."""
+"""Validation utilities for :mod:`intellipdf.tools.merger`."""
 
 from __future__ import annotations
 

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pypdf import PdfReader
 
-from intellipdf.security import (
+from intellipdf.tools.encryptor import (
     PdfSecurityError,
     is_pdf_encrypted,
     protect_pdf,

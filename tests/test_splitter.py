@@ -13,10 +13,10 @@ from intellipdf import (
     split_document,
     validate_split_pdf,
 )
-from intellipdf.split import splitter
-from intellipdf.split.exceptions import InvalidPageRangeError, PDFValidationError
-from intellipdf.split.optimizers import optimize_pdf
-from intellipdf.split.utils import (
+from intellipdf.tools.splitter import splitter
+from intellipdf.tools.splitter.exceptions import InvalidPageRangeError, PDFValidationError
+from intellipdf.tools.splitter.optimizers import optimize_pdf
+from intellipdf.tools.splitter.utils import (
     build_output_filename,
     coerce_path,
     normalize_pages,
@@ -135,8 +135,8 @@ def test_optimize_pdf_branches(monkeypatch: pytest.MonkeyPatch, sample_pdf: Path
         dest = Path(command[-1])
         dest.write_bytes(b"%PDF-1.4\n")
 
-    monkeypatch.setattr("intellipdf.split.optimizers.shutil.which", fake_which)
-    monkeypatch.setattr("intellipdf.split.optimizers.subprocess.run", fake_run)
+    monkeypatch.setattr("intellipdf.tools.splitter.optimizers.shutil.which", fake_which)
+    monkeypatch.setattr("intellipdf.tools.splitter.optimizers.subprocess.run", fake_run)
 
     destination = tmp_path / "optimised.pdf"
     assert optimize_pdf(sample_pdf, destination) is True
@@ -146,7 +146,7 @@ def test_optimize_pdf_branches(monkeypatch: pytest.MonkeyPatch, sample_pdf: Path
 def test_optimize_pdf_handles_missing_and_failure(
     monkeypatch: pytest.MonkeyPatch, sample_pdf: Path, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr("intellipdf.split.optimizers.shutil.which", lambda _: None)
+    monkeypatch.setattr("intellipdf.tools.splitter.optimizers.shutil.which", lambda _: None)
     destination = tmp_path / "skip.pdf"
     destination.write_bytes(b"data")
     assert optimize_pdf(sample_pdf, destination) is False
@@ -157,8 +157,8 @@ def test_optimize_pdf_handles_missing_and_failure(
     def fake_run(command: Iterable[str], check: bool, stdout, stderr) -> None:  # type: ignore[override]
         raise subprocess.CalledProcessError(returncode=1, cmd=list(command))
 
-    monkeypatch.setattr("intellipdf.split.optimizers.shutil.which", fake_which)
-    monkeypatch.setattr("intellipdf.split.optimizers.subprocess.run", fake_run)
+    monkeypatch.setattr("intellipdf.tools.splitter.optimizers.shutil.which", fake_which)
+    monkeypatch.setattr("intellipdf.tools.splitter.optimizers.subprocess.run", fake_run)
     assert optimize_pdf(sample_pdf, destination) is False
 
 
@@ -187,5 +187,5 @@ def test_validate_pdf_error_branches(monkeypatch: pytest.MonkeyPatch, sample_pdf
         def decrypt(self, _: str) -> None:
             return None
 
-    monkeypatch.setattr("intellipdf.split.validators.PdfReader", lambda path: DummyReader())
+    monkeypatch.setattr("intellipdf.tools.splitter.validators.PdfReader", lambda path: DummyReader())
     assert validate_split_pdf(sample_pdf) is True

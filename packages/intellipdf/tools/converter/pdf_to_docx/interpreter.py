@@ -5,12 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ....pdf2docx.converter import (
-    ConversionMetadata,
-    ConversionOptions,
-    ConversionResult,
-    PdfToDocxConverter,
-)
+from .converter import ConversionMetadata, ConversionOptions, ConversionResult, PdfToDocxConverter
 
 
 class DocxInterpreter:

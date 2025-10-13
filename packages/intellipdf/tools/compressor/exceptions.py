@@ -1,4 +1,4 @@
-"""Custom exception types for the :mod:`intellipdf.compress` package."""
+"""Custom exception types for :mod:`intellipdf.tools.compressor`."""
 
 from __future__ import annotations
 
