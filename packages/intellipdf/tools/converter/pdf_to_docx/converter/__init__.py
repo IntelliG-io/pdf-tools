@@ -50,6 +50,16 @@ class PdfToDocxConverter:
         metadata: ConversionMetadata | None = None,
     ) -> ConversionResult:
         destination = self._resolve_output_path(input_document, output_path)
+        if isinstance(input_document, (str, Path)):
+            from .....converter import convert_pdf_to_docx as _core_convert_pdf_to_docx
+
+            return _core_convert_pdf_to_docx(
+                input_document,
+                destination,
+                options=self.options,
+                metadata=metadata,
+            )
+
         pipeline = PdfToDocxPipeline(self.options)
         document_ir, stats, log = pipeline.run(input_document, destination, metadata)
         pages, paragraphs, words, lines = stats

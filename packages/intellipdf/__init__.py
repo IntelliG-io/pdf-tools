@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from .exporters.docx import DocxGenerator, DocxGenerationResult, DocxGenerationStats, generate_docx
 from .tools import compressor as compress
 from .tools import encryptor as security
 from .tools import merger as merge
@@ -22,13 +23,7 @@ from .tools.compressor import (
     get_compression_info,
     validate_pdf as validate_compression_pdf,
 )
-from .tools.converter.pdf_to_docx import (
-    ConversionMetadata,
-    ConversionOptions,
-    ConversionResult,
-    PdfToDocxConverter,
-    convert_pdf_to_docx,
-)
+from .tools.converter.pdf_to_docx import ConversionMetadata, ConversionOptions, ConversionResult, PdfToDocxConverter
 from .tools.encryptor import (
     PdfSecurityError,
     is_pdf_encrypted,
@@ -55,6 +50,7 @@ from .tools.splitter.optimizers import optimize_pdf as optimize_split_pdf
 from .tools import load_builtin_plugins
 from .tools.common.interfaces import ConversionContext
 from .tools.common.pipeline import ToolRegistry, register_tool, registry
+from .converter import ConversionPipeline, convert_pdf_to_docx
 
 pdf2docx = pdf_to_docx
 
@@ -111,6 +107,11 @@ __all__ = [
     "ConversionMetadata",
     "ConversionResult",
     "convert_document",
+    "ConversionPipeline",
+    "DocxGenerator",
+    "DocxGenerationResult",
+    "DocxGenerationStats",
+    "generate_docx",
     "ConversionContext",
     "PdfSecurityError",
 ]
@@ -185,11 +186,11 @@ def convert_document(
 ) -> ConversionResult:
     """Convenience wrapper for PDF → DOCX conversion using the plugin system."""
 
-    config = {"options": options, "metadata": metadata}
     if isinstance(input, (str, Path)):
-        context = ConversionContext(input_path=input, output_path=output, config=config)
-    else:
-        context = ConversionContext(output_path=output, config={"document": input, **config})
+        return convert_pdf_to_docx(input, output, options=options, metadata=metadata)
+
+    config = {"options": options, "metadata": metadata}
+    context = ConversionContext(output_path=output, config={"document": input, **config})
     tool = registry.create("convert_docx", context)
     return tool.run()
 
