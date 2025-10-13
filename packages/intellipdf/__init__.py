@@ -97,6 +97,7 @@ __all__ = [
     "ConversionMetadata",
     "ConversionResult",
     "convert_document",
+    "ConversionContext",
     "PdfSecurityError",
 ]
 

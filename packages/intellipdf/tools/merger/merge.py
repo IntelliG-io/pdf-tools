@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from ...core.utils import get_logger
-from ...merge import PdfMergeError, merge_pdfs
+from ...merge.exceptions import PdfMergeError
+from ...merge.merger import merge_pdfs
 from ..common.interfaces import BaseTool
 from ..common.pipeline import register_tool
 
