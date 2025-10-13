@@ -91,8 +91,9 @@ class ConversionPipeline:
         timings = _StageTimings()
 
         # -- Stage 1: Parse -------------------------------------------------
-        parse_start = perf_counter()
         parser = self._parser_factory(source_path)
+        self._open_pdf_document(parser, logger, resources)
+        parse_start = perf_counter()
         parsed = parser.parse()
         timings.parse_ms = (perf_counter() - parse_start) * 1000.0
         page_numbers = self._resolve_page_numbers(parsed.page_count, self.options.page_numbers)
@@ -320,6 +321,39 @@ class ConversionPipeline:
 
         if destination.exists() and not os.access(destination, os.W_OK):
             raise PermissionError(f"Output file is not writable: {destination}")
+
+    def _open_pdf_document(
+        self,
+        parser: PDFParser,
+        logger: PipelineLogger,
+        resources: dict[str, Any],
+    ) -> None:
+        """Open the PDF resource in binary mode via the parser and record it."""
+
+        try:
+            reader = parser.load()
+        except Exception as exc:  # pragma: no cover - delegated to parser/lib
+            message = f"Unable to open input PDF '{parser.source}': {exc}"
+            raise RuntimeError(message) from exc
+
+        resources["pdf_reader"] = reader
+        stream = getattr(reader, "stream", None)
+        if stream is not None:
+            resources["pdf_stream"] = stream
+
+        page_hint = 0
+        try:
+            page_hint = len(getattr(reader, "pages", []) or [])
+        except Exception:  # pragma: no cover - defensive for exotic readers
+            page_hint = 0
+
+        detail = "Opened input PDF in binary mode via parser backend."
+        if page_hint:
+            detail = (
+                f"Opened input PDF in binary mode via parser backend "
+                f"(page_hint={page_hint})."
+            )
+        self._advance_logger(logger, detail)
 
 
 # ---------------------------------------------------------------------- #
