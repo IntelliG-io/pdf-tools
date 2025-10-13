@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from time import perf_counter
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 from zipfile import ZipFile, BadZipFile
 
 from .core.parser import PDFParser, ParsedDocument
@@ -18,10 +19,13 @@ from .tools.converter.pdf_to_docx.converter.types import (
 )
 from .tools.converter.pdf_to_docx.converter.pipeline import PipelineLogger
 from .tools.converter.pdf_to_docx.interpreter import PDFContentInterpreter, PageContent
-from .tools.converter.pdf_to_docx.layout_analyzer import IntermediateRepresentation, LayoutAnalyzer
+from .tools.converter.pdf_to_docx.layout_analyzer import LayoutAnalyzer
 from .tools.converter.pdf_to_docx.converter.metadata import merge_metadata as _merge_metadata
 
 __all__ = ["ConversionPipeline", "convert_pdf_to_docx"]
+
+
+LOGGER = logging.getLogger("intellipdf.converter")
 
 
 @dataclass(slots=True)
@@ -78,9 +82,10 @@ class ConversionPipeline:
             raise FileNotFoundError(f"Input PDF not found: {source_path}")
         destination = self._resolve_output_path(source_path, output_path)
 
+        resources: dict[str, Any] = context.resources if context is not None else {}
+        logger = self._initialise_environment(source_path, resources, context)
+        LOGGER.info("Starting PDF → DOCX conversion for %s", source_path)
         timings = _StageTimings()
-        logger = PipelineLogger()
-        resources = context.resources if context is not None else {}
 
         # -- Stage 1: Parse -------------------------------------------------
         parse_start = perf_counter()
@@ -88,8 +93,9 @@ class ConversionPipeline:
         parsed = parser.parse()
         timings.parse_ms = (perf_counter() - parse_start) * 1000.0
         page_numbers = self._resolve_page_numbers(parsed.page_count, self.options.page_numbers)
-        logger.advance(
-            f"Parsed '{source_path.name}' ({parsed.page_count} pages) in {timings.parse_ms:.1f} ms."
+        self._advance_logger(
+            logger,
+            f"Parsed '{source_path.name}' ({parsed.page_count} pages) in {timings.parse_ms:.1f} ms.",
         )
         resources["parsed_document"] = parsed
 
@@ -100,9 +106,10 @@ class ConversionPipeline:
         timings.interpret_ms = (perf_counter() - interpret_start) * 1000.0
         glyphs_total = sum(len(content.glyphs) for content in page_contents)
         images_total = sum(len(content.images) for content in page_contents)
-        logger.advance(
+        self._advance_logger(
+            logger,
             f"Decoded {len(page_numbers)} selected pages -> glyphs={glyphs_total}, images={images_total} "
-            f"in {timings.interpret_ms:.1f} ms."
+            f"in {timings.interpret_ms:.1f} ms.",
         )
         resources["page_contents"] = page_contents
 
@@ -112,12 +119,16 @@ class ConversionPipeline:
         ir = analyzer.analyse(parsed, contents=page_contents)
         if self.metadata is not None:
             ir.document.metadata = _merge_metadata(ir.document.metadata, self.metadata)
-            log_entries.append("Applied metadata overrides to IR document metadata.")
+            self._advance_logger(
+                logger,
+                "Applied metadata overrides to IR document metadata.",
+            )
         timings.analyse_ms = (perf_counter() - analyse_start) * 1000.0
-        logger.advance(
+        self._advance_logger(
+            logger,
             f"Extracted layout into {ir.document.page_count} section(s) with "
             f"{sum(len(section.elements) for section in ir.document.sections)} elements "
-            f"in {timings.analyse_ms:.1f} ms."
+            f"in {timings.analyse_ms:.1f} ms.",
         )
         resources["intermediate_representation"] = ir
 
@@ -126,21 +137,23 @@ class ConversionPipeline:
         generation_result = self._generator.generate(ir, destination)
         timings.export_ms = (perf_counter() - export_start) * 1000.0
         self._basic_validation(generation_result.output_path)
-        logger.advance(
+        self._advance_logger(
+            logger,
             f"Generated DOCX '{generation_result.output_path.name}' "
             f"in {timings.export_ms:.1f} ms (paragraphs={generation_result.stats.paragraphs}, "
-            f"words={generation_result.stats.words})."
+            f"words={generation_result.stats.words}).",
         )
 
         # -- Stage 5: Summary & metrics ------------------------------------
         total_duration = timings.parse_ms + timings.interpret_ms + timings.analyse_ms + timings.export_ms
-        logger.advance(
+        self._advance_logger(
+            logger,
             f"Conversion complete in {total_duration:.1f} ms "
-            f"(pages={len(page_numbers)}, tagged={ir.tagged_pdf})."
+            f"(pages={len(page_numbers)}, tagged={ir.tagged_pdf}).",
         )
 
         while logger.remaining():
-            logger.advance()
+            self._advance_logger(logger)
 
         metrics = {
             "parse_ms": timings.parse_ms,
@@ -156,6 +169,13 @@ class ConversionPipeline:
         resources["conversion_log"] = log_records
 
         stats = generation_result.stats
+        LOGGER.info(
+            "Finished conversion for %s (pages=%d, paragraphs=%d, words=%d)",
+            source_path,
+            len(page_numbers),
+            stats.paragraphs,
+            stats.words,
+        )
         return ConversionResult(
             output_path=generation_result.output_path.resolve(),
             page_count=len(page_numbers),
@@ -199,6 +219,66 @@ class ConversionPipeline:
         for index in page_numbers:
             contents.append(interpreter.interpret_page(index))
         return contents
+
+    def _initialise_environment(
+        self,
+        source_path: Path,
+        resources: dict[str, Any],
+        context: ConversionContext | None,
+    ) -> PipelineLogger:
+        logger = PipelineLogger()
+        configuration = self._build_default_configuration()
+        existing_resources = resources.get("configuration")
+        if isinstance(existing_resources, dict):
+            existing_resources.update(configuration)
+            configuration_map = existing_resources
+        else:
+            resources["configuration"] = configuration
+            configuration_map = configuration
+        resources["controller"] = self
+        resources["pipeline_logger"] = logger
+        if context is not None:
+            existing_config = context.config.get("converter")
+            if isinstance(existing_config, dict):
+                existing_config.update(configuration)
+            else:
+                context.config["converter"] = configuration_map
+        self._advance_logger(
+            logger,
+            f"Loaded input document '{source_path.name}' into converter controller.",
+        )
+        self._advance_logger(
+            logger,
+            "Converter configuration initialised "
+            f"(default_styles={len(configuration['default_styles'])}, "
+            f"font_mappings={len(configuration['font_mappings'])}).",
+        )
+        self._advance_logger(
+            logger,
+            "Prepared conversion workspace for pages, fonts, images, and metadata caches.",
+        )
+        return logger
+
+    def _build_default_configuration(self) -> dict[str, Any]:
+        options_snapshot = asdict(self.options)
+        default_styles_attr = getattr(self._generator, "DEFAULT_STYLES", ())
+        if isinstance(default_styles_attr, dict):
+            default_styles: Any = dict(default_styles_attr)
+        elif isinstance(default_styles_attr, (list, tuple, set)):
+            default_styles = tuple(default_styles_attr)
+        else:
+            default_styles = default_styles_attr
+        font_mappings_attr = getattr(self._analyzer_factory, "DEFAULT_FONT_MAPPINGS", {})
+        font_mappings = dict(font_mappings_attr) if isinstance(font_mappings_attr, dict) else {}
+        return {
+            "options": options_snapshot,
+            "default_styles": default_styles,
+            "font_mappings": font_mappings,
+        }
+
+    def _advance_logger(self, logger: PipelineLogger, detail: str | None = None) -> None:
+        logger.advance(detail)
+        LOGGER.debug(logger.records[-1])
 
     @staticmethod
     def _basic_validation(output_path: Path) -> None:
