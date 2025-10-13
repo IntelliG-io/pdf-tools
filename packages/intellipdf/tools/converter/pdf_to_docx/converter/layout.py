@@ -486,8 +486,8 @@ def _detect_tables_from_whitespace(
         column_edges = _grid_edges_from_centers(page, cluster, vertical=False)
         row_count = len(row_edges) - 1
         column_count = len(column_edges) - 1
-        # Require a more substantial grid to avoid false positives
-        if row_count < 3 or column_count < 3:
+        # Require at least a 2x2 grid to continue; larger grids still preferred
+        if row_count < 2 or column_count < 2:
             continue
         detection = _build_table_from_grid(
             page,
@@ -879,8 +879,8 @@ def _table_alignment(page_width: float, left: float, right: float) -> str | None
 def infer_columns(page: Page) -> tuple[int, float | None]:
     if not page.text_blocks:
         return 1, None
-    positions = sorted(block.bbox.left for block in page.text_blocks)
-    if len(positions) < 10:
+    unique_positions = sorted({round(block.bbox.left, 2) for block in page.text_blocks})
+    if len(unique_positions) < 2:
         return 1, None
     # Ensure most blocks are relatively narrow compared to page width
     widths = [max(0.0, block.bbox.right - block.bbox.left) for block in page.text_blocks]
@@ -890,23 +890,34 @@ def infer_columns(page: Page) -> tuple[int, float | None]:
     median_width = widths[len(widths)//2]
     if median_width > page.width * 0.4:
         return 1, None
-    gaps = [positions[index + 1] - positions[index] for index in range(len(positions) - 1)]
+    if len(unique_positions) == 2:
+        spacing = unique_positions[1] - unique_positions[0]
+        if spacing > page.width * 0.2:
+            return 2, spacing
+        return 1, None
+
+    gaps = [
+        unique_positions[index + 1] - unique_positions[index]
+        for index in range(len(unique_positions) - 1)
+    ]
     if not gaps:
         return 1, None
     average_gap = sum(gaps) / len(gaps)
-    large_gaps = [gap for gap in gaps if gap > average_gap * 4.0]
+    gap_threshold = max(page.width * 0.05, average_gap * 3.0)
+    large_gaps = [gap for gap in gaps if gap >= gap_threshold]
     if len(large_gaps) >= 1:
         # Split at largest gap and validate cluster quality (size and tightness)
         max_gap = max(large_gaps)
         split_index = gaps.index(max_gap)
-        threshold = (positions[split_index] + positions[split_index + 1]) / 2.0
+        threshold = (unique_positions[split_index] + unique_positions[split_index + 1]) / 2.0
 
         # Cluster blocks by threshold
         left_blocks = [b for b in page.text_blocks if b.bbox.left < threshold]
         right_blocks = [b for b in page.text_blocks if b.bbox.left >= threshold]
         n = max(1, len(page.text_blocks))
         # Require both clusters to be meaningful portions of the page content
-        if len(left_blocks) < max(4, int(0.35 * n)) or len(right_blocks) < max(4, int(0.35 * n)):
+        min_cluster_size = max(2, int(0.3 * n))
+        if len(left_blocks) < min_cluster_size or len(right_blocks) < min_cluster_size:
             return 1, None
 
         def _std(values: list[float]) -> float:

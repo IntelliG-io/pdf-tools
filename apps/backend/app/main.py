@@ -610,7 +610,7 @@ def _perform_pdf_to_docx_conversion(
 
     options = ConversionOptions(
         page_numbers=page_numbers,
-        strip_whitespace=True,
+        strip_whitespace=False,
         stream_pages=False,
         include_outline_toc=False,
         generate_toc_field=False,
