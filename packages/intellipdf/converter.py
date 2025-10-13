@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from time import perf_counter
@@ -81,6 +82,8 @@ class ConversionPipeline:
         if not source_path.exists():
             raise FileNotFoundError(f"Input PDF not found: {source_path}")
         destination = self._resolve_output_path(source_path, output_path)
+        self._validate_io(source_path, destination)
+        LOGGER.debug("Validated input PDF %s and output destination %s", source_path, destination)
 
         resources: dict[str, Any] = context.resources if context is not None else {}
         logger = self._initialise_environment(source_path, resources, context)
@@ -289,6 +292,34 @@ class ConversionPipeline:
                 archive.getinfo("[Content_Types].xml")
         except (BadZipFile, KeyError) as exc:
             raise RuntimeError(f"Generated DOCX appears invalid: {exc}") from exc
+
+    def _validate_io(self, source_path: Path, destination: Path) -> None:
+        """Ensure the PDF source and DOCX destination satisfy IO expectations."""
+
+        if source_path.suffix.lower() != ".pdf":
+            raise ValueError(
+                f"Input document must be a PDF file with '.pdf' extension: {source_path}"
+            )
+
+        try:
+            with source_path.open("rb") as stream:
+                header = stream.read(5)
+        except OSError as exc:  # pragma: no cover - filesystem level failure
+            raise RuntimeError(f"Unable to read input PDF '{source_path}': {exc}") from exc
+
+        if not header.startswith(b"%PDF"):
+            raise ValueError(
+                "Input document does not appear to be a valid PDF (missing '%PDF' header)."
+            )
+
+        target_dir = destination.parent
+        if not target_dir.exists():
+            raise FileNotFoundError(f"Output directory does not exist: {target_dir}")
+        if not os.access(target_dir, os.W_OK):
+            raise PermissionError(f"Output directory is not writable: {target_dir}")
+
+        if destination.exists() and not os.access(destination, os.W_OK):
+            raise PermissionError(f"Output file is not writable: {destination}")
 
 
 # ---------------------------------------------------------------------- #
