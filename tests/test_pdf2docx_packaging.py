@@ -7,17 +7,17 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from packages.intellipdf.pdf2docx.docx import write_docx
-from packages.intellipdf.pdf2docx.docx.namespaces import XML_NS
-from packages.intellipdf.pdf2docx.docx.parts import build_content_types_xml
-from packages.intellipdf.pdf2docx.docx.relationships import RelationshipManager
-from packages.intellipdf.pdf2docx.docx.validation import (
+from packages.intellipdf.tools.converter.pdf_to_docx.docx import write_docx
+from packages.intellipdf.tools.converter.pdf_to_docx.docx.namespaces import XML_NS
+from packages.intellipdf.tools.converter.pdf_to_docx.docx.parts import build_content_types_xml
+from packages.intellipdf.tools.converter.pdf_to_docx.docx.relationships import RelationshipManager
+from packages.intellipdf.tools.converter.pdf_to_docx.docx.validation import (
     DOCX_ZIP_TIMESTAMP,
     validate_content_types_document,
     validate_relationship_targets,
     validate_xml_parts,
 )
-from packages.intellipdf.pdf2docx.ir import (
+from packages.intellipdf.tools.converter.pdf_to_docx.ir import (
     Comment,
     Document,
     DocumentMetadata,

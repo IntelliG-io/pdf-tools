@@ -31,6 +31,55 @@ foundation for the services that sit on top of it.
 - Validate documents and query document information before operating on them.
 - Protect documents with passwords or remove encryption when authorised.
 
+## Modular architecture
+
+The library now follows a plugin-oriented layout that makes it easy to add new
+tools without touching the existing ones:
+
+```
+packages/intellipdf/
+├── core/                 # shared parser, models, validation and logging
+├── tools/
+│   ├── common/           # ConversionContext and plugin registry helpers
+│   ├── splitter/         # split/extract plugins
+│   ├── merger/           # merge plugin
+│   ├── compressor/       # compression plugin
+│   ├── encryptor/        # encryption/decryption plugins
+│   └── converter/        # format-specific exporters (DOCX, TXT, HTML)
+└── cli/                  # argparse-based orchestration layer
+```
+
+Every plugin receives a :class:`ConversionContext` instance that carries the
+input/output paths, shared parser instances, configuration, and any resources it
+decides to stash for downstream steps. Tools register themselves with the global
+registry via the lightweight decorator defined in
+``intellipdf.tools.common.pipeline``. Both the Python API and the CLI resolve
+operations through that registry, ensuring that the same execution path is used
+everywhere.
+
+### Extending IntelliPDF
+
+Creating a new converter is as simple as registering a class:
+
+```python
+from intellipdf.tools.common.interfaces import BaseTool, ConversionContext
+from intellipdf.tools.common.pipeline import register_tool
+
+
+@register_tool("convert_markdown")
+class PdfToMarkdownExporter(BaseTool):
+    def run(self) -> str:
+        context: ConversionContext = self.context
+        parser = context.ensure_parser()
+        # Convert parser.reader pages to Markdown…
+        output = context.output_path or parser.source.with_suffix(".md")
+        output.write_text("# TODO")
+        return str(output)
+```
+
+After importing the module (or installing it as an entry point), the new tool is
+available through both the Python API and `intellipdf convert --format markdown`.
+
 ## Installation
 
 ```bash
@@ -75,7 +124,7 @@ conversion = convert_document(source, Path("document.docx"))
 print(conversion.output_path, conversion.tagged_pdf)
 
 # Using primitives that might come from a custom parser.
-from intellipdf.pdf2docx import BoundingBox, Page, PdfDocument, TextBlock
+from intellipdf.tools.converter.pdf_to_docx import BoundingBox, Page, PdfDocument, TextBlock
 
 page = Page(
     number=0,

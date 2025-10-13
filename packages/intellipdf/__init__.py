@@ -1,12 +1,17 @@
-"""Unified PDF processing toolkit exposing split, merge, compression, PDF→DOCX and security helpers."""
+"""Unified PDF processing toolkit exposing modular IntelliPDF tools."""
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from . import compress, merge, security,pdf2docx , split
-from .compress import (
+from .tools import compressor as compress
+from .tools import encryptor as security
+from .tools import merger as merge
+from .tools import splitter as split
+from .tools.converter import pdf_to_docx
+from .tools.compressor import (
     CompressionError,
     CompressionInfo,
     CompressionLevel,
@@ -17,7 +22,20 @@ from .compress import (
     get_compression_info,
     validate_pdf as validate_compression_pdf,
 )
-from .merge import (
+from .tools.converter.pdf_to_docx import (
+    ConversionMetadata,
+    ConversionOptions,
+    ConversionResult,
+    PdfToDocxConverter,
+    convert_pdf_to_docx,
+)
+from .tools.encryptor import (
+    PdfSecurityError,
+    is_pdf_encrypted,
+    protect_pdf,
+    unprotect_pdf,
+)
+from .tools.merger import (
     PDFInfo,
     PdfMergeError,
     PdfOptimizationError,
@@ -27,26 +45,27 @@ from .merge import (
     validate_pdf as validate_merge_pdf,
     get_pdf_info as get_merge_info,
 )
-from .security import (
-    PdfSecurityError,
-    is_pdf_encrypted,
-    protect_pdf,
-    unprotect_pdf,
-)
-from .split import (
+from .tools.splitter import (
     extract_pages,
     split_pdf,
     validate_pdf as validate_split_pdf,
     get_pdf_info as get_split_info,
 )
-from .split.optimizers import optimize_pdf as optimize_split_pdf
-from .pdf2docx import (
-    ConversionMetadata,
-    ConversionOptions,
-    ConversionResult,
-    PdfToDocxConverter,
-    convert_pdf_to_docx,
-)
+from .tools.splitter.optimizers import optimize_pdf as optimize_split_pdf
+from .tools import load_builtin_plugins
+from .tools.common.interfaces import ConversionContext
+from .tools.common.pipeline import ToolRegistry, register_tool, registry
+
+pdf2docx = pdf_to_docx
+
+load_builtin_plugins()
+
+# Backwards-compatible module aliases for deprecated top-level packages.
+sys.modules.setdefault(__name__ + ".compress", compress)
+sys.modules.setdefault(__name__ + ".merge", merge)
+sys.modules.setdefault(__name__ + ".split", split)
+sys.modules.setdefault(__name__ + ".security", security)
+sys.modules.setdefault(__name__ + ".pdf2docx", pdf2docx)
 
 __all__ = [
     "compress",
@@ -72,6 +91,10 @@ __all__ = [
     "validate_compression_pdf",
     "optimize_split_pdf",
     "optimize_merge_pdf",
+    "ConversionContext",
+    "ToolRegistry",
+    "registry",
+    "register_tool",
     "CompressionLevel",
     "CompressionResult",
     "CompressionInfo",
@@ -88,6 +111,7 @@ __all__ = [
     "ConversionMetadata",
     "ConversionResult",
     "convert_document",
+    "ConversionContext",
     "PdfSecurityError",
 ]
 
@@ -100,9 +124,15 @@ def split_document(
     ranges: str | Sequence[object] | None = None,
     pages: Sequence[int | str] | None = None,
 ) -> list[Path]:
-    """Convenience wrapper around :func:`split.split_pdf`."""
+    """Convenience wrapper around the split plugin."""
 
-    return split_pdf(input, output_dir, mode=mode, ranges=ranges, pages=pages)
+    context = ConversionContext(
+        input_path=input,
+        output_path=output_dir,
+        config={"mode": mode, "ranges": ranges, "pages": pages},
+    )
+    tool = registry.create("split", context)
+    return tool.run()
 
 
 def extract_document_pages(
@@ -110,15 +140,23 @@ def extract_document_pages(
     page_numbers: Sequence[int | str],
     output: str | Path,
 ) -> Path:
-    """Convenience wrapper around :func:`split.extract_pages`."""
+    """Convenience wrapper around the extract plugin."""
 
-    return extract_pages(input, page_numbers, output)
+    context = ConversionContext(
+        input_path=input,
+        output_path=output,
+        config={"pages": page_numbers},
+    )
+    tool = registry.create("extract", context)
+    return tool.run()
 
 
-def merge_documents(inputs: Iterable[str | Path], output: str | Path) -> Path:
-    """Convenience wrapper around :func:`merge.merge_pdfs`."""
+def merge_documents(inputs: Iterable[str | Path], output: str | Path, **config) -> Path:
+    """Convenience wrapper around the merge plugin."""
 
-    return merge_pdfs(inputs, output)
+    context = ConversionContext(output_path=output, config={"inputs": list(inputs), **config})
+    tool = registry.create("merge", context)
+    return tool.run()
 
 
 def compress_document(
@@ -127,9 +165,15 @@ def compress_document(
     *,
     level: CompressionLevel | None = None,
 ) -> CompressionResult:
-    """Convenience wrapper around :func:`compress.compress_pdf`."""
+    """Convenience wrapper around the compression plugin."""
 
-    return compress_pdf(input, output, level=level)
+    context = ConversionContext(
+        input_path=input,
+        output_path=output,
+        config={"level": level},
+    )
+    tool = registry.create("compress", context)
+    return tool.run()
 
 
 def convert_document(
@@ -139,9 +183,17 @@ def convert_document(
     options: ConversionOptions | None = None,
     metadata: ConversionMetadata | None = None,
 ) -> ConversionResult:
-    """Convenience wrapper for PDF → DOCX conversion."""
+    """Convenience wrapper for PDF → DOCX conversion using the plugin system."""
 
-    return convert_pdf_to_docx(input, output, options=options, metadata=metadata)
+    config = {"options": options, "metadata": metadata}
+    if isinstance(input, (str, Path)):
+        context = ConversionContext(input_path=input, output_path=output, config=config)
+    else:
+        context = ConversionContext(output_path=output, config={"document": input, **config})
+    tool = registry.create("convert_docx", context)
+    return tool.run()
+
+
 def protect_document(
     input: str | Path,
     output: str | Path,
@@ -149,20 +201,27 @@ def protect_document(
     *,
     owner_password: str | None = None,
 ) -> Path:
-    """Convenience wrapper around :func:`security.protect_pdf`."""
+    """Convenience wrapper around the encrypt plugin."""
 
-    return protect_pdf(
-        input,
-        output,
-        password,
-        owner_password=owner_password,
+    context = ConversionContext(
+        input_path=input,
+        output_path=output,
+        config={"password": password, "owner_password": owner_password},
     )
+    tool = registry.create("encrypt", context)
+    return tool.run()
 
 
 def unprotect_document(input: str | Path, output: str | Path, password: str) -> Path:
-    """Convenience wrapper around :func:`security.unprotect_pdf`."""
+    """Convenience wrapper around the decrypt plugin."""
 
-    return unprotect_pdf(input, output, password)
+    context = ConversionContext(
+        input_path=input,
+        output_path=output,
+        config={"password": password},
+    )
+    tool = registry.create("decrypt", context)
+    return tool.run()
 
 
 def is_document_encrypted(path: str | Path) -> bool:

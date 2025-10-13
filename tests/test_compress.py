@@ -5,16 +5,18 @@ import pytest
 from pypdf import PdfReader, PdfWriter
 
 from intellipdf import compress_document
-from intellipdf.compress import (
+from intellipdf.tools.compressor import (
     CompressionResult,
     compress_pdf,
     get_compression_info,
     validate_pdf,
 )
-from intellipdf.compress import info as compress_info
-from intellipdf.compress.compressor import CompressionLevel, CompressionResult as ResultType
-from intellipdf.compress.exceptions import CompressionError, InvalidPDFError
-from intellipdf.compress.optimizers import (
+from intellipdf.tools.compressor import info as compress_info
+from intellipdf.tools.compressor import compressor
+from intellipdf.tools.compressor import utils as compress_utils
+from intellipdf.tools.compressor.compressor import CompressionLevel, CompressionResult as ResultType
+from intellipdf.tools.compressor.exceptions import CompressionError, InvalidPDFError
+from intellipdf.tools.compressor.optimizers import (
     Backend,
     BackendType,
     build_ghostscript_command,
@@ -22,8 +24,6 @@ from intellipdf.compress.optimizers import (
     detect_backend,
     run_backend,
 )
-from intellipdf.compress import compressor
-from intellipdf.compress import utils as compress_utils
 
 
 @pytest.fixture()
@@ -216,8 +216,8 @@ def test_validate_pdf_triggers_external_tool(monkeypatch: pytest.MonkeyPatch, si
         calls.append(command)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("intellipdf.compress.validators.detect_backend", fake_detect)
-    monkeypatch.setattr("intellipdf.compress.validators.run_subprocess", fake_run)
+    monkeypatch.setattr("intellipdf.tools.compressor.validators.detect_backend", fake_detect)
+    monkeypatch.setattr("intellipdf.tools.compressor.validators.run_subprocess", fake_run)
 
     validate_pdf(simple_pdf, use_external=True)
     assert calls and calls[0][0].endswith("qpdf")
@@ -273,7 +273,7 @@ def test_run_backend_and_detection(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         commands.append(command)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("intellipdf.compress.optimizers.run_subprocess", fake_run)
+    monkeypatch.setattr("intellipdf.tools.compressor.optimizers.run_subprocess", fake_run)
 
     backend = Backend(BackendType.QPDF, "qpdf")
     run_backend(backend, tmp_path / "in.pdf", tmp_path / "out.pdf", "high")
@@ -285,11 +285,11 @@ def test_run_backend_and_detection(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     with pytest.raises(ValueError):
         run_backend(SimpleNamespace(type="unknown", executable="noop"), tmp_path / "in.pdf", tmp_path / "out.pdf", "low")
 
-    monkeypatch.setattr("intellipdf.compress.optimizers.which", lambda execs: None)
+    monkeypatch.setattr("intellipdf.tools.compressor.optimizers.which", lambda execs: None)
     assert detect_backend(preferred=[BackendType.QPDF]) is None
 
     monkeypatch.setattr(
-        "intellipdf.compress.optimizers.which",
+        "intellipdf.tools.compressor.optimizers.which",
         lambda execs: "/usr/bin/gs" if "gs" in execs else None,
     )
     detected = detect_backend()

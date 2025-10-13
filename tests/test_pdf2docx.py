@@ -19,8 +19,8 @@ from pypdf.generic import (
 )
 
 from intellipdf import ConversionMetadata, ConversionOptions, convert_document
-from intellipdf.pdf2docx.converter import PdfToDocxConverter
-from intellipdf.pdf2docx.converter import (
+from intellipdf.tools.converter.pdf_to_docx.converter import PdfToDocxConverter
+from intellipdf.tools.converter.pdf_to_docx.converter import (
     _DocumentBuilder,
     _apply_translation_map,
     _blocks_to_paragraphs_static,
@@ -28,11 +28,14 @@ from intellipdf.pdf2docx.converter import (
     _normalise_text_for_numbering,
     _parse_pdf_date,
 )
-from intellipdf.pdf2docx.converter.pipeline import PIPELINE_STEPS
-from intellipdf.pdf2docx.converter.math import block_to_equation, mathml_to_omml
-from intellipdf.pdf2docx.converter.reader import _is_vertical_matrix, extract_vector_graphics
-from intellipdf.pdf2docx.converter.text import CapturedText, text_fragments_to_blocks
-from intellipdf.pdf2docx.ir import (
+from intellipdf.tools.converter.pdf_to_docx.converter.pipeline import PIPELINE_STEPS
+from intellipdf.tools.converter.pdf_to_docx.converter.math import block_to_equation, mathml_to_omml
+from intellipdf.tools.converter.pdf_to_docx.converter.reader import (
+    _is_vertical_matrix,
+    extract_vector_graphics,
+)
+from intellipdf.tools.converter.pdf_to_docx.converter.text import CapturedText, text_fragments_to_blocks
+from intellipdf.tools.converter.pdf_to_docx.ir import (
     Document as IRDocument,
     DocumentMetadata,
     Equation,
@@ -40,10 +43,10 @@ from intellipdf.pdf2docx.ir import (
     Run as IRRun,
     Section as IRSection,
 )
-from intellipdf.pdf2docx.docx.elements import BookmarkState, build_equation_paragraph
-from intellipdf.pdf2docx.docx.namespaces import XML_NS
-from intellipdf.pdf2docx.docx.relationships import RelationshipManager
-from intellipdf.pdf2docx.primitives import (
+from intellipdf.tools.converter.pdf_to_docx.docx.elements import BookmarkState, build_equation_paragraph
+from intellipdf.tools.converter.pdf_to_docx.docx.namespaces import XML_NS
+from intellipdf.tools.converter.pdf_to_docx.docx.relationships import RelationshipManager
+from intellipdf.tools.converter.pdf_to_docx.primitives import (
     BoundingBox,
     FormField,
     Image,
@@ -56,8 +59,9 @@ from intellipdf.pdf2docx.primitives import (
     OutlineNode,
     TextBlock,
 )
-from intellipdf.pdf2docx.converter.images import path_to_picture
-from intellipdf.pdf2docx.converter.layout import collect_page_placements
+from intellipdf.tools.converter.pdf_to_docx.converter.images import path_to_picture
+from intellipdf.tools.converter.pdf_to_docx.converter.layout import collect_page_placements
+from intellipdf.tools.converter.pdf_to_docx.docx import write_docx
 
 
 def _png_bytes(width: int, height: int, color: tuple[int, int, int, int] = (255, 0, 0, 255)) -> bytes:
@@ -94,9 +98,6 @@ def _png_bytes(width: int, height: int, color: tuple[int, int, int, int] = (255,
     idat = chunk(b"IDAT", payload)
     iend = chunk(b"IEND", b"")
     return signature + ihdr + idat + iend
-from intellipdf.pdf2docx.docx import write_docx
-
-
 def _create_pdf(path: Path, text: str, metadata: dict[str, str] | None = None) -> None:
     writer = PdfWriter()
     page = writer.add_blank_page(width=200, height=200)
