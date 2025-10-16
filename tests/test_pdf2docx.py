@@ -236,6 +236,41 @@ def test_conversion_pipeline_records_cross_reference(tmp_path: Path) -> None:
     assert page_refs[0] == leaf_entries[0].get("ref")
 
 
+def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "buffers.pdf"
+    _create_pdf(pdf_path, "Buffer stage")
+
+    docx_path = tmp_path / "buffers.docx"
+    context = ConversionContext()
+    pipeline = ConversionPipeline()
+    pipeline.run(pdf_path, docx_path, context=context)
+
+    plan = context.resources.get("page_content_plan")
+    assert plan == [0]
+
+    buffers = context.resources.get("page_content_buffers")
+    assert isinstance(buffers, list)
+    assert len(buffers) == 1
+    buffer_entry = buffers[0]
+    assert buffer_entry.get("page_number") == 0
+    assert buffer_entry.get("ordinal") == 0
+    assert isinstance(buffer_entry.get("glyphs"), list)
+    assert isinstance(buffer_entry.get("images"), list)
+    assert isinstance(buffer_entry.get("lines"), list)
+    assert isinstance(buffer_entry.get("paths"), list)
+    dimensions = buffer_entry.get("dimensions")
+    assert dimensions and dimensions["width"] > 0 and dimensions["height"] > 0
+    assert buffer_entry.get("glyph_count") == len(buffer_entry.get("glyphs", ()))
+    assert buffer_entry.get("image_count") == len(buffer_entry.get("images", ()))
+
+    summary = context.resources.get("page_content_summary")
+    assert isinstance(summary, list) and len(summary) == 1
+    summary_entry = summary[0]
+    assert summary_entry.get("page_number") == 0
+    assert summary_entry.get("glyphs") == buffer_entry.get("glyph_count")
+    assert summary_entry.get("images") == buffer_entry.get("image_count")
+
+
 def test_pdf_document_primitives_conversion(tmp_path: Path) -> None:
     page = Page(
         number=0,

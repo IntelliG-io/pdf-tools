@@ -121,9 +121,20 @@ class ConversionPipeline:
         resources.setdefault("pdf_cross_reference_kind", xref_kind)
 
         # -- Stage 2: Interpret content streams -----------------------------
+        page_buffers = self._prepare_page_content_buffers(page_numbers, resources)
+        if page_buffers:
+            detail = f"Prepared page content buffers for {len(page_buffers)} page(s)."
+        else:
+            detail = "No pages selected; prepared empty page content buffers."
+        self._advance_logger(logger, detail)
         interpret_start = perf_counter()
         interpreter = self._interpreter_factory(parsed)
-        page_contents = self._interpret_pages(interpreter, page_numbers)
+        page_contents = self._interpret_pages(
+            interpreter,
+            page_numbers,
+            resources=resources,
+            buffers=page_buffers,
+        )
         timings.interpret_ms = (perf_counter() - interpret_start) * 1000.0
         glyphs_total = sum(len(content.glyphs) for content in page_contents)
         images_total = sum(len(content.images) for content in page_contents)
@@ -235,11 +246,89 @@ class ConversionPipeline:
         self,
         interpreter: PDFContentInterpreter,
         page_numbers: Iterable[int],
+        *,
+        resources: dict[str, Any] | None = None,
+        buffers: Sequence[dict[str, Any]] | None = None,
     ) -> list[PageContent]:
         contents: list[PageContent] = []
-        for index in page_numbers:
-            contents.append(interpreter.interpret_page(index))
+        buffer_lookup: dict[int, dict[str, Any]] | None = None
+        if buffers is not None:
+            buffer_lookup = {}
+            for buffer in buffers:
+                page_number = buffer.get("page_number") if isinstance(buffer, dict) else None
+                if isinstance(page_number, int):
+                    buffer_lookup[page_number] = buffer
+        for position, index in enumerate(page_numbers):
+            content = interpreter.interpret_page(index)
+            contents.append(content)
+            if buffers is None:
+                continue
+            target_buffer = None
+            if buffer_lookup is not None:
+                target_buffer = buffer_lookup.get(index)
+            if target_buffer is None and position < len(buffers):
+                target_buffer = buffers[position]
+                if buffer_lookup is not None:
+                    buffer_lookup[index] = target_buffer
+            if not isinstance(target_buffer, dict):
+                continue
+            target_buffer["page_number"] = content.page_number
+            target_buffer["ordinal"] = position
+            target_buffer["glyphs"] = list(content.glyphs)
+            target_buffer["images"] = list(content.images)
+            target_buffer["lines"] = list(content.lines)
+            target_buffer["paths"] = list(content.paths)
+            target_buffer["resources"] = content.resources
+            target_buffer["dimensions"] = {
+                "width": content.width,
+                "height": content.height,
+            }
+            target_buffer["glyph_count"] = len(content.glyphs)
+            target_buffer["image_count"] = len(content.images)
+            target_buffer["line_count"] = len(content.lines)
+            target_buffer["path_count"] = len(content.paths)
+        if resources is not None and buffers is not None:
+            resources["page_content_summary"] = [
+                {
+                    "page_number": buffer.get("page_number"),
+                    "glyphs": buffer.get("glyph_count", len(buffer.get("glyphs", ()))),
+                    "images": buffer.get("image_count", len(buffer.get("images", ()))),
+                    "lines": buffer.get("line_count", len(buffer.get("lines", ()))),
+                    "paths": buffer.get("path_count", len(buffer.get("paths", ()))),
+                }
+                for buffer in buffers
+                if isinstance(buffer, dict)
+            ]
         return contents
+
+    def _prepare_page_content_buffers(
+        self,
+        page_numbers: Sequence[int],
+        resources: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Initialise storage containers for page content extraction."""
+
+        plan = list(page_numbers)
+        buffers: list[dict[str, Any]] = [
+            {
+                "page_number": page_number,
+                "ordinal": index,
+                "glyphs": [],
+                "images": [],
+                "lines": [],
+                "paths": [],
+                "resources": None,
+                "dimensions": None,
+                "glyph_count": 0,
+                "image_count": 0,
+                "line_count": 0,
+                "path_count": 0,
+            }
+            for index, page_number in enumerate(plan)
+        ]
+        resources["page_content_plan"] = plan
+        resources["page_content_buffers"] = buffers
+        return buffers
 
     def _initialise_environment(
         self,
