@@ -337,6 +337,41 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert buffer_entry.get("glyph_count") == len(buffer_entry.get("glyphs", ()))
     assert buffer_entry.get("image_count") == len(buffer_entry.get("images", ()))
 
+    content_streams = context.resources.get("page_content_streams")
+    assert isinstance(content_streams, dict)
+    assert 0 in content_streams
+    streams = content_streams[0]
+    assert isinstance(streams, list)
+    assert streams
+    assert any(b"Buffer stage" in chunk for chunk in streams)
+
+    content_bytes = context.resources.get("page_content_bytes")
+    assert isinstance(content_bytes, dict)
+    assert 0 in content_bytes
+    combined_bytes = content_bytes[0]
+    assert isinstance(combined_bytes, (bytes, bytearray))
+    combined_bytes = bytes(combined_bytes)
+    assert b"Buffer stage" in combined_bytes
+
+    stream_summaries = context.resources.get("page_content_stream_summaries")
+    assert isinstance(stream_summaries, list)
+    assert len(stream_summaries) == 1
+    stream_summary = stream_summaries[0]
+    assert stream_summary.get("page_number") == 0
+    assert stream_summary.get("stream_count") == len(streams)
+    assert stream_summary.get("bytes") == len(combined_bytes)
+    lengths = stream_summary.get("stream_lengths")
+    assert isinstance(lengths, list)
+    assert lengths and lengths[0] == len(streams[0])
+    assert stream_summary.get("has_content")
+
+    assert buffer_entry.get("content_stream_count") == len(streams)
+    assert buffer_entry.get("content_length") == len(combined_bytes)
+    buffer_lengths = buffer_entry.get("content_stream_lengths")
+    assert isinstance(buffer_lengths, list)
+    assert buffer_lengths == lengths
+    assert buffer_entry.get("has_content")
+
     summary = context.resources.get("page_content_summary")
     assert isinstance(summary, list) and len(summary) == 1
     summary_entry = summary[0]

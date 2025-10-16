@@ -126,6 +126,12 @@ class ConversionPipeline:
             logger=logger,
             resources=resources,
         )
+        self._collect_page_content_streams(
+            parsed,
+            page_numbers,
+            logger=logger,
+            resources=resources,
+        )
 
         # -- Stage 2: Interpret content streams -----------------------------
         page_buffers = self._prepare_page_content_buffers(page_numbers, resources)
@@ -327,8 +333,36 @@ class ConversionPipeline:
                 if isinstance(key, int) and isinstance(value, dict):
                     dimensions_map[key] = dict(value)
 
-        buffers: list[dict[str, Any]] = [
-            {
+        stream_summaries_lookup: dict[int, dict[str, Any]] = {}
+        stream_summaries = resources.get("page_content_stream_summaries")
+        if isinstance(stream_summaries, list):
+            for entry in stream_summaries:
+                if not isinstance(entry, dict):
+                    continue
+                page_number = entry.get("page_number")
+                if isinstance(page_number, int):
+                    stream_summaries_lookup[page_number] = dict(entry)
+
+        buffers: list[dict[str, Any]] = []
+        for index, page_number in enumerate(plan):
+            summary = stream_summaries_lookup.get(page_number, {})
+            raw_lengths = summary.get("stream_lengths")
+            stream_lengths: list[int] = []
+            if isinstance(raw_lengths, list):
+                for length in raw_lengths:
+                    if isinstance(length, (int, float)):
+                        stream_lengths.append(int(length))
+            stream_count_raw = summary.get("stream_count")
+            stream_count = int(stream_count_raw) if isinstance(stream_count_raw, (int, float)) else len(stream_lengths)
+            content_length_raw = summary.get("bytes")
+            content_length = (
+                int(content_length_raw)
+                if isinstance(content_length_raw, (int, float))
+                else 0
+            )
+            has_content = bool(summary.get("has_content", bool(stream_lengths) or content_length > 0))
+
+            buffer: dict[str, Any] = {
                 "page_number": page_number,
                 "ordinal": index,
                 "glyphs": [],
@@ -345,9 +379,12 @@ class ConversionPipeline:
                 "image_count": 0,
                 "line_count": 0,
                 "path_count": 0,
+                "content_stream_count": stream_count,
+                "content_stream_lengths": stream_lengths,
+                "content_length": content_length,
+                "has_content": has_content,
             }
-            for index, page_number in enumerate(plan)
-        ]
+            buffers.append(buffer)
         resources["page_content_plan"] = plan
         resources["page_content_buffers"] = buffers
         return buffers
@@ -579,6 +616,87 @@ class ConversionPipeline:
 
         self._advance_logger(logger, detail)
         return dictionaries
+
+    def _collect_page_content_streams(
+        self,
+        parsed: ParsedDocument,
+        page_numbers: Sequence[int],
+        *,
+        logger: PipelineLogger,
+        resources: dict[str, Any],
+    ) -> None:
+        """Collect and summarise raw page content streams."""
+
+        plan = list(page_numbers)
+        pages = parsed.pages
+        stream_lookup: dict[int, list[bytes]] = {}
+        concatenated_lookup: dict[int, bytes] = {}
+        summaries: list[dict[str, Any]] = []
+
+        for ordinal, index in enumerate(plan):
+            if index < 0 or index >= len(pages):
+                raise ValueError(
+                    f"Page index {index} out of bounds for document with {len(pages)} pages",
+                )
+
+            parsed_page = pages[index]
+            raw_streams = []
+            for stream in parsed_page.content_streams or ():
+                if isinstance(stream, bytes):
+                    raw_streams.append(stream)
+                elif isinstance(stream, bytearray):
+                    raw_streams.append(bytes(stream))
+                elif isinstance(stream, str):
+                    raw_streams.append(stream.encode("latin-1", "ignore"))
+                elif stream is None:
+                    continue
+                else:
+                    try:
+                        raw_streams.append(bytes(stream))  # type: ignore[arg-type]
+                    except Exception:
+                        raw_streams.append(str(stream).encode("latin-1", "ignore"))
+
+            concatenated = parsed_page.contents or b""
+            if isinstance(concatenated, bytearray):
+                concatenated = bytes(concatenated)
+            elif isinstance(concatenated, str):
+                concatenated = concatenated.encode("latin-1", "ignore")
+
+            stream_lookup[parsed_page.number] = list(raw_streams)
+            concatenated_lookup[parsed_page.number] = concatenated
+            stream_lengths = [len(chunk) for chunk in raw_streams]
+            summary: dict[str, Any] = {
+                "page_number": parsed_page.number,
+                "ordinal": ordinal,
+                "stream_count": len(raw_streams),
+                "stream_lengths": stream_lengths,
+                "bytes": len(concatenated),
+                "has_content": bool(raw_streams) or bool(concatenated),
+            }
+            summaries.append(summary)
+
+        resources["page_content_streams"] = stream_lookup
+        resources["page_content_bytes"] = concatenated_lookup
+        resources["page_content_stream_summaries"] = summaries
+
+        if summaries:
+            preview: list[str] = []
+            for summary in summaries[:3]:
+                preview.append(
+                    "p"
+                    f"{summary['page_number'] + 1}="
+                    f"streams:{summary['stream_count']},bytes:{summary['bytes']}"
+                )
+            if len(summaries) > 3:
+                preview.append("…")
+            detail = (
+                "Decoded page content streams for "
+                f"{len(summaries)} page(s) ({', '.join(preview)})."
+            )
+        else:
+            detail = "No page content streams found for selected pages."
+
+        self._advance_logger(logger, detail)
 
     def _initialise_environment(
         self,
