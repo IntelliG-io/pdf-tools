@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from time import perf_counter
@@ -82,13 +83,24 @@ class ConversionPipeline:
         if not source_path.exists():
             raise FileNotFoundError(f"Input PDF not found: {source_path}")
         destination = self._resolve_output_path(source_path, output_path)
-        self._validate_io(source_path, destination)
-        LOGGER.debug("Validated input PDF %s and output destination %s", source_path, destination)
+        pdf_version = self._validate_io(source_path, destination)
+        LOGGER.debug(
+            "Validated input PDF %s (version=%s) and output destination %s",
+            source_path,
+            pdf_version,
+            destination,
+        )
 
         resources: dict[str, Any] = context.resources if context is not None else {}
         logger = self._initialise_environment(source_path, resources, context)
         LOGGER.info("Starting PDF → DOCX conversion for %s", source_path)
         timings = _StageTimings()
+
+        resources["pdf_version"] = pdf_version
+        self._advance_logger(
+            logger,
+            f"Detected PDF header version {pdf_version}.",
+        )
 
         # -- Stage 1: Parse -------------------------------------------------
         parser = self._parser_factory(source_path)
@@ -294,8 +306,12 @@ class ConversionPipeline:
         except (BadZipFile, KeyError) as exc:
             raise RuntimeError(f"Generated DOCX appears invalid: {exc}") from exc
 
-    def _validate_io(self, source_path: Path, destination: Path) -> None:
-        """Ensure the PDF source and DOCX destination satisfy IO expectations."""
+    def _validate_io(self, source_path: Path, destination: Path) -> str:
+        """Ensure the PDF source and DOCX destination satisfy IO expectations.
+
+        Returns the declared PDF version from the file header when validation
+        succeeds.
+        """
 
         if source_path.suffix.lower() != ".pdf":
             raise ValueError(
@@ -304,14 +320,20 @@ class ConversionPipeline:
 
         try:
             with source_path.open("rb") as stream:
-                header = stream.read(5)
+                header_line = stream.readline(32)
         except OSError as exc:  # pragma: no cover - filesystem level failure
             raise RuntimeError(f"Unable to read input PDF '{source_path}': {exc}") from exc
 
-        if not header.startswith(b"%PDF"):
+        if not header_line.startswith(b"%PDF-"):
             raise ValueError(
                 "Input document does not appear to be a valid PDF (missing '%PDF' header)."
             )
+
+        header_text = header_line.decode("ascii", errors="ignore")
+        version_match = re.match(r"%PDF-(\d+(?:\.\d+)?)", header_text)
+        if version_match is None:
+            raise ValueError("Unable to determine PDF version from document header.")
+        pdf_version = version_match.group(1)
 
         target_dir = destination.parent
         if not target_dir.exists():
@@ -321,6 +343,8 @@ class ConversionPipeline:
 
         if destination.exists() and not os.access(destination, os.W_OK):
             raise PermissionError(f"Output file is not writable: {destination}")
+
+        return pdf_version
 
     def _open_pdf_document(
         self,
