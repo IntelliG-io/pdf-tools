@@ -228,6 +228,12 @@ def test_conversion_pipeline_records_cross_reference(tmp_path: Path) -> None:
     assert pages_summary.get("kids")
     assert context.resources.get("pdf_pages_ref")
     assert context.resources.get("pdf_pages_count") == 1
+    leaf_entries = context.resources.get("pdf_pages_leaves")
+    assert leaf_entries
+    assert context.resources.get("pdf_pages_leaf_count") == len(leaf_entries)
+    page_refs = context.resources.get("pdf_page_refs")
+    assert page_refs
+    assert page_refs[0] == leaf_entries[0].get("ref")
 
 
 def test_pdf_document_primitives_conversion(tmp_path: Path) -> None:

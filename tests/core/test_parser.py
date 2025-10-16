@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, NameObject, NumberObject
 
 from intellipdf.core.parser import PDFParser
 
@@ -74,6 +74,14 @@ def test_pdf_parser_builds_parsed_document(tmp_path):
     assert pages_summary.get("kids")
     assert pages_summary["kids"][0]["type"] == "/Page"
 
+    assert catalog_info.get("pages_leaf_count") == 1
+    leaf_entries = catalog_info.get("pages_leaves")
+    assert isinstance(leaf_entries, list)
+    assert len(leaf_entries) == 1
+    assert leaf_entries[0]["type"] == "/Page"
+    assert leaf_entries[0]["index"] == 0
+    assert leaf_entries[0].get("ref") == page.object_ref
+
     resolved = document.resolver.resolve(page.object_ref)
     assert resolved is not None
     assert page.resources == {}
@@ -126,3 +134,52 @@ def test_pdf_parser_collects_incremental_xref_sections(tmp_path):
     assert len(trailers) >= 1
     trailer_info = parser.read_trailer()
     assert trailer_info["root_ref"] is not None
+
+
+def test_pdf_parser_traverses_nested_pages_tree(tmp_path):
+    pdf_path = tmp_path / "nested.pdf"
+
+    writer = PdfWriter()
+    for _ in range(3):
+        writer.add_blank_page(width=200, height=200)
+
+    pages_root = writer._root_object[NameObject("/Pages")]
+    kids = pages_root[NameObject("/Kids")]
+    first_ref, second_ref, third_ref = kids[0], kids[1], kids[2]
+
+    subtree = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Pages"),
+            NameObject("/Count"): NumberObject(2),
+            NameObject("/Parent"): pages_root.indirect_reference,
+            NameObject("/Kids"): ArrayObject([second_ref, third_ref]),
+        }
+    )
+    subtree_ref = writer._add_object(subtree)
+
+    pages_root[NameObject("/Kids")] = ArrayObject([first_ref, subtree_ref])
+    pages_root[NameObject("/Count")] = NumberObject(3)
+
+    for child_ref in subtree[NameObject("/Kids")]:
+        child_page = child_ref.get_object()
+        child_page[NameObject("/Parent")] = subtree_ref
+
+    with pdf_path.open("wb") as handle:
+        writer.write(handle)
+
+    parser = PDFParser(pdf_path)
+    catalog_info = parser.read_document_catalog()
+
+    assert catalog_info.get("pages_leaf_count") == 3
+    leaf_entries = catalog_info.get("pages_leaves")
+    assert isinstance(leaf_entries, list)
+    assert len(leaf_entries) == 3
+    assert [entry.get("index") for entry in leaf_entries] == [0, 1, 2]
+    assert all(entry.get("ref") for entry in leaf_entries)
+
+    document = parser.parse()
+    assert document.page_count == 3
+
+    parsed_refs = [page.object_ref for page in document.pages]
+    summary_refs = [entry.get("ref") for entry in leaf_entries]
+    assert parsed_refs == summary_refs

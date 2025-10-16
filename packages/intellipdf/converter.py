@@ -547,6 +547,18 @@ class ConversionPipeline:
         if pages_count is not None:
             resources.setdefault("pdf_pages_count", pages_count)
 
+        leaf_count = catalog_info.get("pages_leaf_count")
+        if leaf_count is not None:
+            resources.setdefault("pdf_pages_leaf_count", leaf_count)
+
+        leaves = catalog_info.get("pages_leaves")
+        if isinstance(leaves, list) and leaves:
+            resources.setdefault("pdf_pages_leaves", leaves)
+            resources.setdefault(
+                "pdf_page_refs",
+                [entry.get("ref") for entry in leaves],
+            )
+
         detail_parts: list[str] = []
         if pages_ref is not None:
             detail_parts.append(f"pages_ref={pages_ref[0]} {pages_ref[1]}")
@@ -558,6 +570,8 @@ class ConversionPipeline:
             kids_count = pages_summary.get("kids_count")
             if isinstance(kids_count, int):
                 detail_parts.append(f"pages_kids={kids_count}")
+        if isinstance(leaf_count, int):
+            detail_parts.append(f"page_leaves={leaf_count}")
 
         if detail_parts:
             detail = "Loaded PDF document catalog (" + ", ".join(detail_parts) + ")."

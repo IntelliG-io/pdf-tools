@@ -191,6 +191,11 @@ class PDFParser:
         ) = None
         self._trailer_info: dict[str, Any] | None = None
         self._catalog_info: dict[str, Any] | None = None
+        self._catalog_pages_node: DictionaryObject | None = None
+        self._catalog_pages_ref: tuple[int, int] | None = None
+        self._page_nodes_cache: (
+            tuple[tuple[DictionaryObject, tuple[int, int] | None], ...] | None
+        ) = None
         if preload:
             self.load()
 
@@ -253,7 +258,8 @@ class PDFParser:
         catalog_info = self.read_document_catalog()
         root = catalog_info.get("catalog", {})
 
-        pages = self._build_pages(reader, raw_bytes, object_offsets)
+        page_nodes = self._collect_page_nodes()
+        pages = self._build_pages(raw_bytes, object_offsets, page_nodes)
 
         document = ParsedDocument(
             path=self.source,
@@ -525,6 +531,13 @@ class PDFParser:
                 "Document catalog /Pages entry does not reference a /Pages node"
             )
 
+        self._catalog_pages_node = pages_obj
+        self._catalog_pages_ref = pages_ref
+        self._page_nodes_cache = None
+
+        page_nodes = self._enumerate_pages_node(pages_obj, ref=pages_ref)
+        self._page_nodes_cache = tuple(page_nodes)
+
         catalog_info = {
             "catalog": self._to_python(catalog_obj, dereference=True),
             "catalog_ref": root_ref,
@@ -542,6 +555,12 @@ class PDFParser:
             pages_obj,
             ref=pages_ref,
         )
+
+        catalog_info["pages_leaf_count"] = len(page_nodes)
+        catalog_info["pages_leaves"] = [
+            self._summarize_page_leaf(page_node, page_ref, index)
+            for index, (page_node, page_ref) in enumerate(page_nodes)
+        ]
 
         self._catalog_info = dict(catalog_info)
         return dict(catalog_info)
@@ -626,6 +645,105 @@ class PDFParser:
                 summary["kids_count"] = len(children)
 
         return summary
+
+    def _summarize_page_leaf(
+        self,
+        page: DictionaryObject,
+        ref: tuple[int, int] | None,
+        index: int,
+    ) -> dict[str, Any]:
+        summary: dict[str, Any] = {"type": "/Page", "index": index}
+        if ref is not None:
+            summary["ref"] = ref
+
+        media_box = self._resolve_array(page.get(NameObject("/MediaBox")))
+        if media_box is not None:
+            summary["media_box"] = media_box
+
+        rotate = self._inherit_scalar(page, "/Rotate")
+        if rotate is not None:
+            summary["rotate"] = int(rotate)
+
+        return summary
+
+    def _enumerate_pages_node(
+        self,
+        node: DictionaryObject,
+        *,
+        ref: tuple[int, int] | None,
+        _seen_refs: set[tuple[int, int]] | None = None,
+        _seen_nodes: set[int] | None = None,
+    ) -> list[tuple[DictionaryObject, tuple[int, int] | None]]:
+        if _seen_refs is None:
+            _seen_refs = set()
+        if _seen_nodes is None:
+            _seen_nodes = set()
+
+        entries: list[tuple[DictionaryObject, tuple[int, int] | None]] = []
+        node_id = id(node)
+        if node_id in _seen_nodes:
+            return entries
+        _seen_nodes.add(node_id)
+
+        type_obj = self._resolve(node.get(NameObject("/Type")))
+        type_name = str(type_obj) if type_obj is not None else None
+
+        kids_obj = node.get(NameObject("/Kids"))
+        kids_resolved = self._resolve(kids_obj)
+
+        if type_name == "/Page" or (
+            type_name is None and not isinstance(kids_resolved, ArrayObject)
+        ):
+            entries.append((node, ref))
+            return entries
+
+        if not isinstance(kids_resolved, ArrayObject):
+            return entries
+
+        for child in kids_resolved:
+            child_ref: tuple[int, int] | None = None
+            if isinstance(child, IndirectObject):
+                child_ref = (child.idnum, child.generation)
+                if child_ref in _seen_refs:
+                    continue
+                _seen_refs.add(child_ref)
+
+            child_resolved = self._resolve(child)
+            if not isinstance(child_resolved, DictionaryObject):
+                continue
+
+            child_type_obj = self._resolve(child_resolved.get(NameObject("/Type")))
+            child_type = str(child_type_obj) if child_type_obj is not None else None
+            child_kids = self._resolve(child_resolved.get(NameObject("/Kids")))
+
+            if child_type == "/Pages" or (
+                child_type is None
+                and isinstance(child_kids, ArrayObject)
+            ):
+                entries.extend(
+                    self._enumerate_pages_node(
+                        child_resolved,
+                        ref=child_ref,
+                        _seen_refs=_seen_refs,
+                        _seen_nodes=_seen_nodes,
+                    )
+                )
+            elif child_type == "/Page" or child_type is None:
+                entries.append((child_resolved, child_ref))
+
+        return entries
+
+    def _collect_page_nodes(self) -> list[tuple[DictionaryObject, tuple[int, int] | None]]:
+        if self._page_nodes_cache is not None:
+            return [(node, ref) for node, ref in self._page_nodes_cache]
+
+        # Trigger catalog parsing to populate caches if needed.
+        self.read_document_catalog()
+
+        if self._page_nodes_cache is None:
+            raise ValueError("Document catalog is missing a /Pages hierarchy")
+
+        return [(node, ref) for node, ref in self._page_nodes_cache]
 
     def _resolve_array(self, obj: Any) -> list[float] | None:
         resolved = self._resolve(obj)
@@ -1014,24 +1132,26 @@ class PDFParser:
 
     def _build_pages(
         self,
-        reader: PdfReader,
         data: bytes,
         offsets: dict[tuple[int, int], int],
+        page_nodes: Sequence[tuple[DictionaryObject, tuple[int, int] | None]],
     ) -> list[ParsedPage]:
         pages: list[ParsedPage] = []
-        for index, page in enumerate(reader.pages):
-            page_dict = self._resolve(page)
-            if not isinstance(page_dict, DictionaryObject):
+        for index, (page_obj, object_ref) in enumerate(page_nodes):
+            page_dict: DictionaryObject | None
+            if isinstance(page_obj, DictionaryObject):
+                page_dict = page_obj
+            else:
+                resolved = self._resolve(page_obj)
+                page_dict = resolved if isinstance(resolved, DictionaryObject) else None
+
+            if page_dict is None:
                 continue
 
-            ref = getattr(page, "indirect_reference", None)
-            object_ref: tuple[int, int] | None = None
-            if isinstance(ref, IndirectObject):
-                object_ref = (ref.idnum, ref.generation)
-                if object_ref not in offsets:
-                    position = _search_object_offset(data, object_ref)
-                    if position is not None:
-                        offsets[object_ref] = position
+            if object_ref is not None and object_ref not in offsets:
+                position = _search_object_offset(data, object_ref)
+                if position is not None:
+                    offsets[object_ref] = position
 
             geometry = self._build_geometry(page_dict)
             resources = self._resolve_resources(page_dict)
