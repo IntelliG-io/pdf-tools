@@ -1078,8 +1078,61 @@ def capture_text_fragments(
             return None
         return None
 
-    def _emit_text(raw: str) -> None:
+    pending_space = False
+    pending_newline = False
+    have_emitted_text = False
+
+    def _should_insert_space_from_adjustment(value: object) -> bool:
+        try:
+            adjustment = float(value)  # type: ignore[arg-type]
+        except Exception:
+            return False
+        if adjustment >= 0:
+            return False
+        font_size = current_font_size or 12.0
+        scale = (horizontal_scaling or 100.0) / 100.0
+        advance = (-adjustment / 1000.0) * font_size * scale
+        if word_spacing > 0:
+            advance += word_spacing * scale
+        threshold = max(font_size * 0.3, 1.0)
+        if character_spacing > 0:
+            threshold = max(threshold, character_spacing * scale * 0.5)
+        return advance >= threshold
+
+    def _decode_text(value: object) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (bytes, bytearray)):
+            try:
+                return value.decode("latin1", "ignore")
+            except Exception:
+                return str(value)
+        try:
+            return str(value)
+        except Exception:
+            return ""
+
+    def _move_to_next_line() -> None:
+        nonlocal line_matrix, text_matrix, pending_newline, pending_space
+        if line_matrix is None:
+            return
+        try:
+            step = -leading if leading else -1.2 * (current_font_size or 12.0)
+            translate = (1.0, 0.0, 0.0, 1.0, 0.0, step)
+            line_matrix = _matrix_multiply(line_matrix, translate)
+            text_matrix = line_matrix
+            if have_emitted_text:
+                pending_newline = True
+                pending_space = False
+            else:
+                pending_newline = False
+                pending_space = False
+        except Exception:
+            pass
+
+    def _emit_text(raw: str, *, leading_space: bool = False, leading_newline: bool = False) -> None:
         nonlocal text_matrix, current_font_ref, current_font_size
+        nonlocal pending_space, pending_newline, have_emitted_text
         if not raw:
             return
         tm = text_matrix or working_state.IDENTITY_MATRIX
@@ -1109,6 +1162,26 @@ def capture_text_fragments(
         except Exception:
             eff_font_size = float(current_font_size) if current_font_size else None
         color_hex = _rgb_tuple_to_hex(current_fill_color)
+        last_x, last_y = working_state.last_text_position
+        font_size = current_font_size or 12.0
+        scale_factor = (horizontal_scaling or 100.0) / 100.0
+        line_threshold = max(font_size * 0.6, 1.0)
+        word_threshold = max(font_size * 0.3, 1.0)
+        if not leading_newline and have_emitted_text:
+            delta_y = y - last_y
+            delta_x = x - last_x
+            if vertical:
+                if abs(delta_x) > line_threshold:
+                    leading_newline = True
+            else:
+                if abs(delta_y) > line_threshold:
+                    leading_newline = True
+                elif not leading_space and delta_x * scale_factor > word_threshold:
+                    leading_space = True
+        if leading_newline and have_emitted_text and not raw.startswith("\n"):
+            raw = "\n" + raw
+        if leading_space and have_emitted_text and not raw.startswith(" "):
+            raw = " " + raw
         fragments.append(
             CapturedText(
                 text=raw,
@@ -1123,6 +1196,9 @@ def capture_text_fragments(
         working_state.last_text_position = (float(x), float(y))
         if base_font is not None:
             working_state.font_name = base_font
+        pending_space = False
+        pending_newline = False
+        have_emitted_text = True
 
     operations = getattr(content, "operations", [])
     for operands, operator in operations:
@@ -1170,18 +1246,19 @@ def capture_text_fragments(
                 translate = (1.0, 0.0, 0.0, 1.0, tx, ty)
                 line_matrix = _matrix_multiply(line_matrix, translate)
                 text_matrix = line_matrix
+                font_size = current_font_size or 12.0
+                if op == b"TD":
+                    leading = -ty
+                if have_emitted_text:
+                    if abs(ty) > max(font_size * 0.5, 1.0):
+                        pending_newline = True
+                        pending_space = False
+                    elif abs(tx) > max(font_size * 0.3, 1.0):
+                        pending_space = True
             except Exception:
                 pass
         elif op == b"T*":
-            if line_matrix is None:
-                continue
-            try:
-                ty = -1.2 * (current_font_size or 12.0)
-                translate = (1.0, 0.0, 0.0, 1.0, 0.0, ty)
-                line_matrix = _matrix_multiply(line_matrix, translate)
-                text_matrix = line_matrix
-            except Exception:
-                pass
+            _move_to_next_line()
         elif op == b"Tc" and operands:
             try:
                 character_spacing = float(operands[0])
@@ -1203,25 +1280,24 @@ def capture_text_fragments(
             except Exception:
                 leading = leading
         elif op == b"Tj" and operands:
-            s = operands[0]
-            try:
-                raw = s if isinstance(s, str) else s.decode("latin1", "ignore")
-            except Exception:
-                raw = str(s)
-            _emit_text(raw)
+            raw = _decode_text(operands[0])
+            _emit_text(raw, leading_space=pending_space, leading_newline=pending_newline)
         elif op == b"TJ" and operands:
             arr = operands[0]
-            parts: list[str] = []
-            for item in arr:
-                if isinstance(item, (bytes, bytearray)):
-                    try:
-                        parts.append(item.decode("latin1", "ignore"))
-                    except Exception:
-                        parts.append(str(item))
-                elif isinstance(item, str):
-                    parts.append(item)
-            if parts:
-                _emit_text("".join(parts))
+            if isinstance(arr, (list, tuple, ArrayObject)):
+                for item in arr:
+                    if isinstance(item, (bytes, bytearray, str)):
+                        raw = _decode_text(item)
+                        _emit_text(
+                            raw,
+                            leading_space=pending_space,
+                            leading_newline=pending_newline,
+                        )
+                    else:
+                        if _should_insert_space_from_adjustment(item):
+                            pending_space = True
+                        else:
+                            pending_space = False
         elif op == b"RG" and len(operands) >= 3:
             try:
                 current_stroke_color = _rgb_color(operands[:3])
@@ -1278,6 +1354,19 @@ def capture_text_fragments(
             generic = _generic_color(operands)
             if generic is not None:
                 current_stroke_color = generic
+        elif op == b"'" and operands:
+            _move_to_next_line()
+            raw = _decode_text(operands[0])
+            _emit_text(raw, leading_space=pending_space, leading_newline=pending_newline)
+        elif op == b'"' and len(operands) >= 3:
+            try:
+                word_spacing = float(operands[0])
+                character_spacing = float(operands[1])
+            except Exception:
+                pass
+            _move_to_next_line()
+            raw = _decode_text(operands[2])
+            _emit_text(raw, leading_space=pending_space, leading_newline=pending_newline)
 
     working_state.ctm = matrix_stack[-1]
     working_state.text_matrix = text_matrix or working_state.IDENTITY_MATRIX

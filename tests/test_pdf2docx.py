@@ -524,6 +524,63 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert interpreter_state == state_entry
 
 
+def test_text_extraction_handles_spacing_and_newlines(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "spacing.pdf"
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=300)
+
+    font_dict = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font_dict)
+    resources = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})})
+    page[NameObject("/Resources")] = resources
+
+    content = (
+        "BT "
+        "/F1 12 Tf "
+        "72 200 Td "
+        "(Hello) Tj "
+        "0 -18 Td "
+        "(World) Tj "
+        "18 0 Td "
+        "[(Spaced) -600 (Word)] TJ "
+        "T* "
+        "(Next) Tj "
+        "ET"
+    ).encode("utf-8")
+    stream = StreamObject()
+    stream[NameObject("/Length")] = NumberObject(len(content))
+    stream._data = content
+    stream_ref = writer._add_object(stream)
+    page[NameObject("/Contents")] = stream_ref
+
+    with pdf_path.open("wb") as handle:
+        writer.write(handle)
+
+    docx_path = tmp_path / "spacing.docx"
+    context = ConversionContext()
+    pipeline = ConversionPipeline()
+    pipeline.run(pdf_path, docx_path, context=context)
+
+    text_buffers = context.resources.get("page_text_buffers")
+    assert isinstance(text_buffers, list)
+    assert text_buffers
+    text_elements = text_buffers[0].get("text_elements")
+    assert isinstance(text_elements, list) and text_elements
+    texts = [element.get("text", "") for element in text_elements]
+
+    assert any(entry.startswith("Hello") for entry in texts)
+    assert any(entry.startswith("\nWorld") for entry in texts)
+    assert any(entry.startswith(" Spaced") for entry in texts)
+    assert any(entry.startswith(" Word") for entry in texts)
+    assert any(entry.startswith("\nNext") for entry in texts)
+
+
 def test_pdf_document_primitives_conversion(tmp_path: Path) -> None:
     page = Page(
         number=0,
