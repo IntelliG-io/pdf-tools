@@ -28,6 +28,9 @@ def test_pdf_parser_builds_parsed_document(tmp_path):
     _write_sample_pdf(pdf_path)
 
     parser = PDFParser(pdf_path)
+    startxref, xref_kind = parser.locate_cross_reference()
+    assert startxref > 0
+    assert xref_kind == "table"
     document = parser.parse()
 
     assert document.version.startswith("1.")
@@ -53,6 +56,9 @@ def test_pdf_parser_handles_xref_stream(tmp_path):
     _write_sample_pdf(pdf_path, use_xref_stream=True)
 
     parser = PDFParser(pdf_path)
+    startxref, xref_kind = parser.locate_cross_reference()
+    assert startxref > 0
+    assert xref_kind == "stream"
     document = parser.parse()
 
     assert document.object_offsets

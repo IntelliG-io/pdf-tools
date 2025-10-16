@@ -171,6 +171,8 @@ class PDFParser:
         self._reader: PdfReader | None = None
         self._raw_bytes: bytes | None = None
         self._parsed: ParsedDocument | None = None
+        self._startxref: int | None = None
+        self._xref_kind: str | None = None
         if preload:
             self.load()
 
@@ -216,7 +218,7 @@ class PDFParser:
 
         raw_bytes = self._load_bytes()
         version = self._detect_version(raw_bytes)
-        startxref = self._locate_startxref(raw_bytes)
+        startxref, _ = self.locate_cross_reference()
 
         reader = self.reader
 
@@ -248,6 +250,24 @@ class PDFParser:
         )
         self._parsed = document
         return document
+
+    def locate_cross_reference(self) -> tuple[int, str]:
+        """Locate the cross-reference data and return its offset and kind."""
+
+        if self._startxref is not None and self._xref_kind is not None:
+            return self._startxref, self._xref_kind
+
+        raw_bytes = self._load_bytes()
+        startxref = self._locate_startxref(raw_bytes)
+        view = raw_bytes[startxref : startxref + 16]
+        if view.startswith(b"xref"):
+            kind = "table"
+        else:
+            kind = "stream"
+
+        self._startxref = startxref
+        self._xref_kind = kind
+        return startxref, kind
 
     # -- Internal helpers ----------------------------------------------------
 

@@ -19,6 +19,7 @@ from pypdf.generic import (
 )
 
 from intellipdf import ConversionMetadata, ConversionOptions, convert_document
+from intellipdf.converter import ConversionPipeline
 from intellipdf.tools.converter.pdf_to_docx.converter import PdfToDocxConverter
 from intellipdf.tools.converter.pdf_to_docx.converter import (
     _DocumentBuilder,
@@ -35,6 +36,7 @@ from intellipdf.tools.converter.pdf_to_docx.converter.reader import (
     extract_vector_graphics,
 )
 from intellipdf.tools.converter.pdf_to_docx.converter.text import CapturedText, text_fragments_to_blocks
+from intellipdf.tools.common.interfaces import ConversionContext
 from intellipdf.tools.converter.pdf_to_docx.ir import (
     Document as IRDocument,
     DocumentMetadata,
@@ -141,6 +143,7 @@ def _assert_pipeline_log(result) -> None:
     assert result.log[0].startswith("Load or receive parsed PdfDocument instance.")
     assert result.log[-1].startswith("Return success status and summary log")
     assert any("Extracted" in entry for entry in result.log), "Expected extraction details in log"
+    assert any("cross-reference" in entry.lower() for entry in result.log)
 
 
 @pytest.mark.parametrize("text", ["Hello PDF", "Multi\nLine PDF"])
@@ -191,6 +194,20 @@ def test_pdf_to_docx_encrypted_with_password(tmp_path: Path) -> None:
     assert result.output_path == docx_path.resolve()
     assert result.page_count == 1
     _assert_pipeline_log(result)
+
+
+def test_conversion_pipeline_records_cross_reference(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "xref.pdf"
+    _create_pdf(pdf_path, "CrossRef")
+
+    docx_path = tmp_path / "xref.docx"
+    context = ConversionContext()
+    pipeline = ConversionPipeline()
+    result = pipeline.run(pdf_path, docx_path, context=context)
+
+    assert result.output_path == docx_path.resolve()
+    assert context.resources.get("pdf_startxref", 0) > 0
+    assert context.resources.get("pdf_cross_reference_kind") in {"table", "stream"}
 
 
 def test_pdf_document_primitives_conversion(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Literal, Sequence
 from zipfile import ZipFile, BadZipFile
 
 from .core.parser import PDFParser, ParsedDocument
@@ -105,6 +105,7 @@ class ConversionPipeline:
         # -- Stage 1: Parse -------------------------------------------------
         parser = self._parser_factory(source_path)
         self._open_pdf_document(parser, logger, resources, context)
+        startxref, xref_kind = self._locate_cross_reference(parser, logger, resources)
         parse_start = perf_counter()
         parsed = parser.parse()
         timings.parse_ms = (perf_counter() - parse_start) * 1000.0
@@ -114,6 +115,8 @@ class ConversionPipeline:
             f"Parsed '{source_path.name}' ({parsed.page_count} pages) in {timings.parse_ms:.1f} ms.",
         )
         resources["parsed_document"] = parsed
+        resources.setdefault("pdf_startxref", startxref)
+        resources.setdefault("pdf_cross_reference_kind", xref_kind)
 
         # -- Stage 2: Interpret content streams -----------------------------
         interpret_start = perf_counter()
@@ -421,6 +424,29 @@ class ConversionPipeline:
                 + ")."
             )
         self._advance_logger(logger, detail)
+
+    def _locate_cross_reference(
+        self,
+        parser: PDFParser,
+        logger: PipelineLogger,
+        resources: dict[str, Any],
+    ) -> tuple[int, Literal["table", "stream"]]:
+        """Locate the PDF cross-reference and log the findings."""
+
+        try:
+            startxref, xref_kind = parser.locate_cross_reference()
+        except Exception as exc:  # pragma: no cover - delegated to parser/lib
+            message = f"Unable to locate cross-reference data in '{parser.source}': {exc}"
+            raise RuntimeError(message) from exc
+
+        resources["pdf_startxref"] = startxref
+        resources["pdf_cross_reference_kind"] = xref_kind
+
+        detail = (
+            f"Located PDF cross-reference {xref_kind} at byte offset {startxref}."
+        )
+        self._advance_logger(logger, detail)
+        return startxref, xref_kind
 
 
 # ---------------------------------------------------------------------- #
