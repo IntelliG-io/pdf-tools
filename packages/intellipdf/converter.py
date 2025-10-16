@@ -286,10 +286,14 @@ class ConversionPipeline:
             target_buffer["lines"] = list(content.lines)
             target_buffer["paths"] = list(content.paths)
             target_buffer["resources"] = content.resources
-            target_buffer["dimensions"] = {
+            existing_dimensions = {}
+            if isinstance(target_buffer.get("dimensions"), dict):
+                existing_dimensions = dict(target_buffer["dimensions"])
+            existing_dimensions.update({
                 "width": content.width,
                 "height": content.height,
-            }
+            })
+            target_buffer["dimensions"] = existing_dimensions
             target_buffer["glyph_count"] = len(content.glyphs)
             target_buffer["image_count"] = len(content.images)
             target_buffer["line_count"] = len(content.lines)
@@ -368,6 +372,34 @@ class ConversionPipeline:
         descriptors: list[str] = []
         geometry_summaries: list[dict[str, Any]] = []
         dimension_lookup: dict[int, dict[str, Any]] = {}
+        resource_lookup: dict[int, dict[str, Any]] = {}
+        resource_summaries: list[dict[str, Any]] = []
+
+        def _summarise_named_resources(values: Any) -> list[dict[str, Any]]:
+            entries: list[dict[str, Any]] = []
+            if not isinstance(values, dict):
+                return entries
+            for raw_name, candidate in values.items():
+                name = str(raw_name)
+                entry: dict[str, Any] = {"name": name}
+                if isinstance(candidate, dict):
+                    ref = candidate.get("$ref")
+                    if isinstance(ref, (list, tuple)) and len(ref) == 2:
+                        try:
+                            entry["ref"] = (int(ref[0]), int(ref[1]))
+                        except Exception:
+                            entry["ref"] = tuple(ref)  # pragma: no cover - defensive fallback
+                    subtype = candidate.get("/Subtype")
+                    if isinstance(subtype, str):
+                        entry["subtype"] = subtype
+                    base_font = candidate.get("/BaseFont")
+                    if isinstance(base_font, str):
+                        entry["base_font"] = base_font
+                    length = candidate.get("__stream_length__")
+                    if isinstance(length, (int, float)):
+                        entry["length"] = float(length)
+                entries.append(entry)
+            return entries
 
         for ordinal, index in enumerate(plan):
             if index < 0 or index >= len(pages):
@@ -418,6 +450,16 @@ class ConversionPipeline:
                 descriptor += f"[{ref[0]} {ref[1]}]"
             descriptors.append(descriptor)
 
+            page_resources = (
+                parsed_page.resources if isinstance(parsed_page.resources, dict) else {}
+            )
+            resource_lookup[parsed_page.number] = page_resources
+            fonts_summary = _summarise_named_resources(page_resources.get("/Font"))
+            xobject_summary = _summarise_named_resources(page_resources.get("/XObject"))
+            extgstate_summary = _summarise_named_resources(page_resources.get("/ExtGState"))
+            properties_summary = _summarise_named_resources(page_resources.get("/Properties"))
+            color_space_summary = _summarise_named_resources(page_resources.get("/ColorSpace"))
+
             entry: dict[str, Any] = {
                 "page_number": parsed_page.number,
                 "ordinal": ordinal,
@@ -458,6 +500,22 @@ class ConversionPipeline:
                 geometry_summary["crop_width"] = crop_width
                 geometry_summary["crop_height"] = crop_height
             geometry_summaries.append(geometry_summary)
+            resource_summary: dict[str, Any] = {
+                "page_number": parsed_page.number,
+                "ordinal": ordinal,
+                "keys": sorted(page_resources.keys()),
+                "font_count": len(fonts_summary),
+                "fonts": fonts_summary,
+                "xobject_count": len(xobject_summary),
+                "xobjects": xobject_summary,
+                "ext_gstate_count": len(extgstate_summary),
+                "ext_gstate": extgstate_summary,
+                "property_count": len(properties_summary),
+                "properties": properties_summary,
+                "color_space_count": len(color_space_summary),
+                "color_spaces": color_space_summary,
+            }
+            resource_summaries.append(resource_summary)
             dimension_lookup[parsed_page.number] = {
                 "width": width,
                 "height": height,
@@ -477,6 +535,8 @@ class ConversionPipeline:
         resources["page_dictionary_refs"] = [entry.get("object_ref") for entry in details]
         resources["page_geometry_summaries"] = geometry_summaries
         resources["page_dimensions"] = dimension_lookup
+        resources["page_resources"] = resource_lookup
+        resources["page_resource_summaries"] = resource_summaries
 
         if descriptors:
             geometry_descriptions: list[str] = []
@@ -494,10 +554,24 @@ class ConversionPipeline:
                 if geometry_descriptions
                 else ""
             )
+            resource_descriptions: list[str] = []
+            for summary in resource_summaries[:3]:
+                resource_descriptions.append(
+                    "p"
+                    f"{summary['page_number'] + 1}="
+                    f"fonts:{summary['font_count']},xobj:{summary['xobject_count']}"
+                )
+            if len(resource_summaries) > 3:
+                resource_descriptions.append("…")
+            resource_clause = (
+                f" resources ({', '.join(resource_descriptions)})"
+                if resource_descriptions
+                else ""
+            )
             detail = (
                 "Enumerated "
                 f"{len(descriptors)} page dictionaries ({', '.join(descriptors)}) before interpretation;"
-                f"{geometry_clause}."
+                f"{geometry_clause}{resource_clause}."
             )
             detail = detail.replace(";.", ".")
         else:

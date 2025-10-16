@@ -287,6 +287,28 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert dimension_entry.get("height") == pytest.approx(iteration_entry.get("height"))
     assert dimension_entry.get("rotation") == iteration_entry.get("rotation")
 
+    page_resources = context.resources.get("page_resources")
+    assert isinstance(page_resources, dict)
+    assert 0 in page_resources
+    resource_entry = page_resources[0]
+    assert isinstance(resource_entry, dict)
+    assert "/Font" in resource_entry
+    fonts_mapping = resource_entry.get("/Font")
+    assert isinstance(fonts_mapping, dict)
+    assert "/F1" in fonts_mapping
+
+    resource_summaries = context.resources.get("page_resource_summaries")
+    assert isinstance(resource_summaries, list)
+    assert len(resource_summaries) == 1
+    resource_summary = resource_summaries[0]
+    assert resource_summary.get("page_number") == 0
+    assert resource_summary.get("font_count") >= 1
+    fonts_summary = resource_summary.get("fonts")
+    assert isinstance(fonts_summary, list) and fonts_summary
+    font_entry = fonts_summary[0]
+    assert font_entry.get("name") in {"/F1", "F1"}
+    assert font_entry.get("base_font") in {"/Helvetica", "Helvetica"}
+
     dictionary_refs = context.resources.get("page_dictionary_refs")
     assert isinstance(dictionary_refs, list)
     assert len(dictionary_refs) == 1
