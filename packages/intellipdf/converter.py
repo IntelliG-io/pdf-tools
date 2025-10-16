@@ -316,6 +316,13 @@ class ConversionPipeline:
         """Initialise storage containers for page content extraction."""
 
         plan = list(page_numbers)
+        raw_dimensions = resources.get("page_dimensions")
+        dimensions_map: dict[int, dict[str, Any]] = {}
+        if isinstance(raw_dimensions, dict):
+            for key, value in raw_dimensions.items():
+                if isinstance(key, int) and isinstance(value, dict):
+                    dimensions_map[key] = dict(value)
+
         buffers: list[dict[str, Any]] = [
             {
                 "page_number": page_number,
@@ -325,7 +332,11 @@ class ConversionPipeline:
                 "lines": [],
                 "paths": [],
                 "resources": None,
-                "dimensions": None,
+                "dimensions": (
+                    dict(dimensions_map.get(page_number, {}))
+                    if page_number in dimensions_map
+                    else None
+                ),
                 "glyph_count": 0,
                 "image_count": 0,
                 "line_count": 0,
@@ -355,6 +366,8 @@ class ConversionPipeline:
         details: list[dict[str, Any]] = []
         dictionaries: list[Any] = []
         descriptors: list[str] = []
+        geometry_summaries: list[dict[str, Any]] = []
+        dimension_lookup: dict[int, dict[str, Any]] = {}
 
         for ordinal, index in enumerate(plan):
             if index < 0 or index >= len(pages):
@@ -372,10 +385,19 @@ class ConversionPipeline:
 
             dictionaries.append(page_dict)
 
-            left, bottom, right, top = parsed_page.geometry.media_box
+            media_left, media_bottom, media_right, media_top = parsed_page.geometry.media_box
             unit = parsed_page.geometry.user_unit or 1.0
-            width = float((right - left) * unit)
-            height = float((top - bottom) * unit)
+            media_width = float((media_right - media_left) * unit)
+            media_height = float((media_top - media_bottom) * unit)
+            crop_box = parsed_page.geometry.crop_box
+            if crop_box is not None:
+                crop_left, crop_bottom, crop_right, crop_top = crop_box
+                crop_width = float((crop_right - crop_left) * unit)
+                crop_height = float((crop_top - crop_bottom) * unit)
+            else:
+                crop_width = crop_height = None
+            width = crop_width if crop_width is not None else media_width
+            height = crop_height if crop_height is not None else media_height
             rotation_raw = parsed_page.geometry.rotate
             rotation = int(rotation_raw) if rotation_raw is not None else 0
             ref = parsed_page.object_ref
@@ -405,23 +427,79 @@ class ConversionPipeline:
                 "height": height,
                 "user_unit": float(unit),
                 "dictionary_type": dictionary_type,
-                "media_box": tuple(float(value) for value in parsed_page.geometry.media_box),
+                "media_box": (
+                    float(media_left),
+                    float(media_bottom),
+                    float(media_right),
+                    float(media_top),
+                ),
+                "media_width": media_width,
+                "media_height": media_height,
             }
-            if parsed_page.geometry.crop_box is not None:
-                entry["crop_box"] = tuple(
-                    float(value) for value in parsed_page.geometry.crop_box  # type: ignore[arg-type]
-                )
+            if crop_box is not None:
+                entry["crop_box"] = tuple(float(value) for value in crop_box)
+                entry["crop_width"] = crop_width
+                entry["crop_height"] = crop_height
             details.append(entry)
+
+            geometry_summary: dict[str, Any] = {
+                "page_number": parsed_page.number,
+                "ordinal": ordinal,
+                "width": width,
+                "height": height,
+                "rotation": rotation,
+                "media_box": entry["media_box"],
+                "media_width": media_width,
+                "media_height": media_height,
+                "user_unit": float(unit),
+            }
+            if crop_box is not None:
+                geometry_summary["crop_box"] = entry["crop_box"]
+                geometry_summary["crop_width"] = crop_width
+                geometry_summary["crop_height"] = crop_height
+            geometry_summaries.append(geometry_summary)
+            dimension_lookup[parsed_page.number] = {
+                "width": width,
+                "height": height,
+                "rotation": rotation,
+                "media_box": entry["media_box"],
+                "user_unit": float(unit),
+                "media_width": media_width,
+                "media_height": media_height,
+            }
+            if crop_box is not None:
+                dimension_lookup[parsed_page.number]["crop_box"] = entry["crop_box"]
+                dimension_lookup[parsed_page.number]["crop_width"] = crop_width
+                dimension_lookup[parsed_page.number]["crop_height"] = crop_height
 
         resources["page_iteration_details"] = details
         resources["page_dictionaries"] = dictionaries
         resources["page_dictionary_refs"] = [entry.get("object_ref") for entry in details]
+        resources["page_geometry_summaries"] = geometry_summaries
+        resources["page_dimensions"] = dimension_lookup
 
         if descriptors:
+            geometry_descriptions: list[str] = []
+            for summary in geometry_summaries[:3]:
+                dims = f"{summary['width']:.1f}x{summary['height']:.1f}pt"
+                if summary["rotation"]:
+                    dims += f"@{summary['rotation']}°"
+                geometry_descriptions.append(
+                    f"p{summary['page_number'] + 1}={dims}"
+                )
+            if len(geometry_summaries) > 3:
+                geometry_descriptions.append("…")
+            geometry_clause = (
+                f" captured geometry ({', '.join(geometry_descriptions)})"
+                if geometry_descriptions
+                else ""
+            )
             detail = (
                 "Enumerated "
-                f"{len(descriptors)} page dictionaries ({', '.join(descriptors)}) before interpretation."
+                f"{len(descriptors)} page dictionaries ({', '.join(descriptors)}) before interpretation;"
+                f"{geometry_clause}."
             )
+            detail = detail.replace(";.", ".")
         else:
             detail = "No page dictionaries selected for iteration; skipping enumeration."
 

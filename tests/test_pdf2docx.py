@@ -264,6 +264,28 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert iteration_entry.get("width") > 0
     assert iteration_entry.get("height") > 0
     assert iteration_entry.get("dictionary_type") == "/Page"
+    assert iteration_entry.get("rotation") == 0
+    assert iteration_entry.get("media_width") == pytest.approx(200.0)
+    assert iteration_entry.get("media_height") == pytest.approx(200.0)
+    assert iteration_entry.get("media_box") == (0.0, 0.0, 200.0, 200.0)
+    assert iteration_entry.get("crop_box") is None
+
+    geometry_summaries = context.resources.get("page_geometry_summaries")
+    assert isinstance(geometry_summaries, list)
+    assert len(geometry_summaries) == 1
+    geometry_entry = geometry_summaries[0]
+    assert geometry_entry.get("page_number") == 0
+    assert geometry_entry.get("width") == pytest.approx(iteration_entry.get("width"))
+    assert geometry_entry.get("height") == pytest.approx(iteration_entry.get("height"))
+    assert geometry_entry.get("rotation") == iteration_entry.get("rotation")
+
+    page_dimensions = context.resources.get("page_dimensions")
+    assert isinstance(page_dimensions, dict)
+    assert 0 in page_dimensions
+    dimension_entry = page_dimensions[0]
+    assert dimension_entry.get("width") == pytest.approx(iteration_entry.get("width"))
+    assert dimension_entry.get("height") == pytest.approx(iteration_entry.get("height"))
+    assert dimension_entry.get("rotation") == iteration_entry.get("rotation")
 
     dictionary_refs = context.resources.get("page_dictionary_refs")
     assert isinstance(dictionary_refs, list)
@@ -284,7 +306,12 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert isinstance(buffer_entry.get("lines"), list)
     assert isinstance(buffer_entry.get("paths"), list)
     dimensions = buffer_entry.get("dimensions")
-    assert dimensions and dimensions["width"] > 0 and dimensions["height"] > 0
+    assert isinstance(dimensions, dict)
+    assert dimensions.get("width") == pytest.approx(iteration_entry.get("width"))
+    assert dimensions.get("height") == pytest.approx(iteration_entry.get("height"))
+    assert dimensions.get("rotation") == iteration_entry.get("rotation")
+    assert dimensions.get("media_box") == iteration_entry.get("media_box")
+    assert "crop_box" not in dimensions or dimensions.get("crop_box") is None
     assert buffer_entry.get("glyph_count") == len(buffer_entry.get("glyphs", ()))
     assert buffer_entry.get("image_count") == len(buffer_entry.get("images", ()))
 
