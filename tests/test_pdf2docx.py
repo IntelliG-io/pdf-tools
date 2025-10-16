@@ -245,6 +245,31 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     pipeline = ConversionPipeline()
     pipeline.run(pdf_path, docx_path, context=context)
 
+    iteration_plan = context.resources.get("page_iteration_plan")
+    assert iteration_plan == [0]
+
+    dictionaries = context.resources.get("page_dictionaries")
+    assert isinstance(dictionaries, list)
+    assert len(dictionaries) == 1
+    page_dict = dictionaries[0]
+    assert hasattr(page_dict, "get")
+    assert str(page_dict.get("/Type")) == "/Page"
+
+    iteration_details = context.resources.get("page_iteration_details")
+    assert isinstance(iteration_details, list)
+    assert len(iteration_details) == 1
+    iteration_entry = iteration_details[0]
+    assert iteration_entry.get("page_number") == 0
+    assert iteration_entry.get("ordinal") == 0
+    assert iteration_entry.get("width") > 0
+    assert iteration_entry.get("height") > 0
+    assert iteration_entry.get("dictionary_type") == "/Page"
+
+    dictionary_refs = context.resources.get("page_dictionary_refs")
+    assert isinstance(dictionary_refs, list)
+    assert len(dictionary_refs) == 1
+    assert dictionary_refs[0] == iteration_entry.get("object_ref")
+
     plan = context.resources.get("page_content_plan")
     assert plan == [0]
 

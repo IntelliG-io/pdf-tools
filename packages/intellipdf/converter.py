@@ -120,6 +120,13 @@ class ConversionPipeline:
         resources.setdefault("pdf_startxref", startxref)
         resources.setdefault("pdf_cross_reference_kind", xref_kind)
 
+        self._iterate_page_dictionaries(
+            parsed,
+            page_numbers,
+            logger=logger,
+            resources=resources,
+        )
+
         # -- Stage 2: Interpret content streams -----------------------------
         page_buffers = self._prepare_page_content_buffers(page_numbers, resources)
         if page_buffers:
@@ -329,6 +336,97 @@ class ConversionPipeline:
         resources["page_content_plan"] = plan
         resources["page_content_buffers"] = buffers
         return buffers
+
+    def _iterate_page_dictionaries(
+        self,
+        parsed: ParsedDocument,
+        page_numbers: Sequence[int],
+        *,
+        logger: PipelineLogger,
+        resources: dict[str, Any],
+    ) -> list[Any]:
+        """Enumerate each selected page dictionary before interpretation."""
+
+        plan = list(page_numbers)
+        resources["page_iteration_plan"] = plan
+
+        pages = parsed.pages
+        reader = parsed.resolver.reader
+        details: list[dict[str, Any]] = []
+        dictionaries: list[Any] = []
+        descriptors: list[str] = []
+
+        for ordinal, index in enumerate(plan):
+            if index < 0 or index >= len(pages):
+                raise ValueError(
+                    f"Page index {index} out of bounds for document with {len(pages)} pages",
+                )
+
+            parsed_page = pages[index]
+
+            try:
+                page_dict = reader.pages[parsed_page.number]  # type: ignore[index]
+            except Exception as exc:  # pragma: no cover - delegated to parser/lib
+                message = f"Unable to load page {parsed_page.number + 1} dictionary: {exc}"
+                raise RuntimeError(message) from exc
+
+            dictionaries.append(page_dict)
+
+            left, bottom, right, top = parsed_page.geometry.media_box
+            unit = parsed_page.geometry.user_unit or 1.0
+            width = float((right - left) * unit)
+            height = float((top - bottom) * unit)
+            rotation_raw = parsed_page.geometry.rotate
+            rotation = int(rotation_raw) if rotation_raw is not None else 0
+            ref = parsed_page.object_ref
+
+            dictionary_type: str | None = None
+            if hasattr(page_dict, "get"):
+                try:
+                    raw_type = page_dict.get("/Type")
+                except Exception:
+                    raw_type = None
+                if raw_type is not None:
+                    dictionary_type = str(raw_type)
+
+            descriptor = f"p{parsed_page.number + 1}"
+            if rotation:
+                descriptor += f"@{rotation}°"
+            if isinstance(ref, tuple):
+                descriptor += f"[{ref[0]} {ref[1]}]"
+            descriptors.append(descriptor)
+
+            entry: dict[str, Any] = {
+                "page_number": parsed_page.number,
+                "ordinal": ordinal,
+                "object_ref": ref,
+                "rotation": rotation,
+                "width": width,
+                "height": height,
+                "user_unit": float(unit),
+                "dictionary_type": dictionary_type,
+                "media_box": tuple(float(value) for value in parsed_page.geometry.media_box),
+            }
+            if parsed_page.geometry.crop_box is not None:
+                entry["crop_box"] = tuple(
+                    float(value) for value in parsed_page.geometry.crop_box  # type: ignore[arg-type]
+                )
+            details.append(entry)
+
+        resources["page_iteration_details"] = details
+        resources["page_dictionaries"] = dictionaries
+        resources["page_dictionary_refs"] = [entry.get("object_ref") for entry in details]
+
+        if descriptors:
+            detail = (
+                "Enumerated "
+                f"{len(descriptors)} page dictionaries ({', '.join(descriptors)}) before interpretation."
+            )
+        else:
+            detail = "No page dictionaries selected for iteration; skipping enumeration."
+
+        self._advance_logger(logger, detail)
+        return dictionaries
 
     def _initialise_environment(
         self,
