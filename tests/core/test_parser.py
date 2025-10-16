@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from intellipdf.core.parser import PDFParser
@@ -33,6 +33,10 @@ def test_pdf_parser_builds_parsed_document(tmp_path):
     assert xref_kind == "table"
     document = parser.parse()
 
+    raw_offsets = parser._parse_cross_reference(
+        parser.reader, pdf_path.read_bytes(), document.startxref
+    )
+
     assert document.version.startswith("1.")
     assert document.page_count == 1
     assert document.metadata["/Title"] == "Test Document"
@@ -44,6 +48,7 @@ def test_pdf_parser_builds_parsed_document(tmp_path):
     assert page.content_streams
     assert page.contents.strip() == b"q\nQ"
     assert page.object_ref is not None
+    assert raw_offsets.get(page.object_ref) is not None
     assert document.object_offsets.get(page.object_ref) is not None
 
     resolved = document.resolver.resolve(page.object_ref)
@@ -61,7 +66,34 @@ def test_pdf_parser_handles_xref_stream(tmp_path):
     assert xref_kind == "stream"
     document = parser.parse()
 
+    raw_offsets = parser._parse_cross_reference(
+        parser.reader, pdf_path.read_bytes(), document.startxref
+    )
+
     assert document.object_offsets
     page = document.pages[0]
     assert page.object_ref is not None
+    assert raw_offsets.get(page.object_ref) is not None
     assert document.object_offsets.get(page.object_ref) is not None
+
+
+def test_pdf_parser_collects_incremental_xref_sections(tmp_path):
+    pdf_path = tmp_path / "incremental.pdf"
+    _write_sample_pdf(pdf_path)
+
+    reader = PdfReader(str(pdf_path))
+    writer = PdfWriter()
+    writer.clone_reader_document_root(reader)
+    writer.add_metadata({"/Subject": "Incremental"})
+    with pdf_path.open("rb+") as handle:
+        writer.write(handle, incremental=True)
+
+    parser = PDFParser(pdf_path)
+    document = parser.parse()
+    raw_offsets = parser._parse_cross_reference(
+        parser.reader, pdf_path.read_bytes(), document.startxref
+    )
+
+    page = document.pages[0]
+    assert page.object_ref is not None
+    assert raw_offsets.get(page.object_ref) is not None

@@ -105,6 +105,17 @@ class ParsedDocument:
 _WHITESPACE = b"\x00\t\n\r\f "
 
 
+def _decode_be_integer(buffer: bytes) -> int:
+    """Decode a big-endian integer from ``buffer`` handling empty segments."""
+
+    if not buffer:
+        return 0
+    value = 0
+    for byte in buffer:
+        value = (value << 8) | byte
+    return value
+
+
 def _as_bytes(obj: object) -> bytes:
     if isinstance(obj, bytes):
         return obj
@@ -308,8 +319,15 @@ class PDFParser:
         data: bytes,
         startxref: int,
     ) -> dict[tuple[int, int], int]:
-        offsets = self._parse_xref_tables(data, startxref)
+        offsets = self._parse_cross_reference(reader, data, startxref)
         if offsets:
+            # Supplement any missing entries (such as compressed object streams)
+            # with the offsets known to PyPDF.  This keeps the mapping exhaustive
+            # while still preferring the offsets we parsed directly from the
+            # cross-reference sections.
+            reader_offsets = self._offsets_from_reader(reader)
+            for key, value in reader_offsets.items():
+                offsets.setdefault(key, value)
             return offsets
 
         reader_offsets = self._offsets_from_reader(reader)
@@ -361,21 +379,53 @@ class PDFParser:
             pass
         return inferred
 
-    def _parse_xref_tables(self, data: bytes, startxref: int) -> dict[tuple[int, int], int]:
+    def _parse_cross_reference(
+        self,
+        reader: PdfReader,
+        data: bytes,
+        startxref: int,
+    ) -> dict[tuple[int, int], int]:
         if startxref < 0 or startxref >= len(data):
-            return {}
-        view = data[startxref:]
-        if not view.startswith(b"xref"):
-            # XRef stream or unsupported format; bail out.
             return {}
 
         offsets: dict[tuple[int, int], int] = {}
-        index = startxref + len(b"xref")
-        index = _skip_ws(data, index)
+        visited: set[int] = set()
+        next_offset: int | None = startxref
+
+        while next_offset is not None and next_offset not in visited:
+            visited.add(next_offset)
+            view = data[next_offset:]
+            if view.startswith(b"xref"):
+                section_offsets, prev = self._parse_xref_table_section(data, next_offset)
+            else:
+                section_offsets, prev = self._parse_xref_stream_section(reader, data, next_offset)
+
+            for key, value in section_offsets.items():
+                # Later revisions override earlier ones; only record the first
+                # occurrence we encounter while walking ``startxref`` backwards.
+                offsets.setdefault(key, value)
+
+            if prev is None:
+                break
+            next_offset = int(prev)
+
+        return offsets
+
+    def _parse_xref_table_section(
+        self, data: bytes, start: int
+    ) -> tuple[dict[tuple[int, int], int], int | None]:
+        offsets: dict[tuple[int, int], int] = {}
         length = len(data)
+        index = start + len(b"xref")
+        index = _skip_ws(data, index)
+
         while index < length:
             if data[index : index + 7] == b"trailer":
-                break
+                index += 7
+                index = _skip_ws(data, index)
+                dictionary_bytes, _ = self._extract_pdf_dictionary(data, index)
+                prev = self._parse_prev_from_dictionary(dictionary_bytes)
+                return offsets, prev
             try:
                 start_obj, index = _read_int(data, index)
                 count, index = _read_int(data, index)
@@ -398,7 +448,137 @@ class PDFParser:
                 while index < length and data[index] in b"\r\n":
                     index += 1
             index = _skip_ws(data, index)
-        return offsets
+
+        return offsets, None
+
+    def _parse_xref_stream_section(
+        self,
+        reader: PdfReader,
+        data: bytes,
+        start: int,
+    ) -> tuple[dict[tuple[int, int], int], int | None]:
+        offsets: dict[tuple[int, int], int] = {}
+        view = data[start:]
+        header = re.match(rb"\s*(\d+)\s+(\d+)\s+obj", view)
+        if not header:
+            return offsets, None
+
+        obj_num = int(header.group(1))
+        generation = int(header.group(2))
+
+        try:
+            stream_obj = reader.get_object(IndirectObject(obj_num, generation, reader))
+        except Exception:
+            return offsets, None
+
+        if not isinstance(stream_obj, StreamObject):
+            return offsets, None
+
+        try:
+            decoded = stream_obj.get_data()  # type: ignore[call-arg]
+        except Exception:
+            raw_data = stream_obj._data  # type: ignore[attr-defined]
+            decoded = _as_bytes(raw_data)
+
+        widths_obj = stream_obj.get(NameObject("/W"))
+        if not isinstance(widths_obj, ArrayObject):
+            return offsets, self._parse_prev_from_dictionary(stream_obj)
+        widths = [int(w) for w in widths_obj]
+        if len(widths) != 3:
+            return offsets, self._parse_prev_from_dictionary(stream_obj)
+        entry_width = sum(widths)
+        if entry_width <= 0:
+            return offsets, self._parse_prev_from_dictionary(stream_obj)
+
+        size_obj = stream_obj.get(NameObject("/Size"))
+        size = int(size_obj) if isinstance(size_obj, (int, float)) else 0
+
+        index_obj = stream_obj.get(NameObject("/Index"))
+        if isinstance(index_obj, ArrayObject) and len(index_obj) % 2 == 0:
+            subsections = [
+                (int(index_obj[i]), int(index_obj[i + 1]))
+                for i in range(0, len(index_obj), 2)
+            ]
+        else:
+            subsections = [(0, size)] if size else []
+
+        position = 0
+        for start_obj, count in subsections:
+            for i in range(count):
+                end = position + entry_width
+                if end > len(decoded):
+                    break
+                field1 = _decode_be_integer(decoded[position : position + widths[0]])
+                field2 = _decode_be_integer(
+                    decoded[position + widths[0] : position + widths[0] + widths[1]]
+                )
+                field3 = _decode_be_integer(decoded[position + widths[0] + widths[1] : end])
+                position = end
+
+                if field1 == 0:
+                    continue
+                if field1 == 1:
+                    offsets[(start_obj + i, field3)] = field2
+                elif field1 == 2:
+                    container = (field2, 0)
+                    container_offset = offsets.get(container)
+                    if container_offset is None:
+                        container_offset = _search_object_offset(data, container)
+                    if container_offset is not None:
+                        offsets[(start_obj + i, 0)] = container_offset
+            if position + entry_width > len(decoded):
+                break
+
+        prev = self._parse_prev_from_dictionary(stream_obj)
+        return offsets, prev
+
+    def _parse_prev_from_dictionary(self, dictionary: Any) -> int | None:
+        if isinstance(dictionary, (bytes, bytearray)):
+            prev_match = re.search(rb"/Prev\s+([0-9]+)", bytes(dictionary))
+            if prev_match:
+                return int(prev_match.group(1))
+            return None
+
+        if isinstance(dictionary, DictionaryObject):
+            candidate = dictionary.get(NameObject("/Prev"))
+            if isinstance(candidate, (int, float)):
+                return int(candidate)
+            if isinstance(candidate, IndirectObject):
+                try:
+                    resolved = candidate.get_object()
+                except Exception:
+                    return None
+                if isinstance(resolved, (int, float)):
+                    return int(resolved)
+            return None
+
+        return None
+
+    def _extract_pdf_dictionary(self, data: bytes, start: int) -> tuple[bytes, int]:
+        depth = 0
+        index = start
+        length = len(data)
+        while index + 1 < length:
+            if data[index : index + 2] == b"<<":
+                depth += 1
+                index += 2
+                break
+            index += 1
+
+        begin = index - 2
+        while index + 1 < length and depth > 0:
+            if data[index : index + 2] == b"<<":
+                depth += 1
+                index += 2
+                continue
+            if data[index : index + 2] == b">>":
+                depth -= 1
+                index += 2
+                if depth == 0:
+                    return data[begin:index], index
+                continue
+            index += 1
+        return data[begin:index], index
 
     def _offsets_from_reader(self, reader: PdfReader) -> dict[tuple[int, int], int]:
         """Reuse the internal pypdf cross reference tables when available."""
