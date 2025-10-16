@@ -299,6 +299,7 @@ class ConversionPipeline:
         text_buffer_lookup: dict[int, dict[str, Any]] | None = None
         command_lookup: dict[int, list[dict[str, Any]]] | None = None
         command_summary_lookup: dict[int, dict[str, Any]] | None = None
+        state_change_lookup: dict[int, list[dict[str, Any]]] | None = None
         if isinstance(resources, dict):
             raw_commands = resources.get("page_content_commands")
             if isinstance(raw_commands, Mapping):
@@ -324,6 +325,21 @@ class ConversionPipeline:
                     page_number = entry.get("page_number")
                     if isinstance(page_number, int):
                         command_summary_lookup[page_number] = dict(entry)
+            raw_state_changes = resources.get("page_text_state_changes")
+            if isinstance(raw_state_changes, Mapping):
+                state_change_lookup = {}
+                for key, value in raw_state_changes.items():
+                    try:
+                        page_number = int(key)
+                    except Exception:
+                        continue
+                    if not isinstance(value, list):
+                        continue
+                    normalised_changes: list[dict[str, Any]] = []
+                    for entry in value:
+                        if isinstance(entry, dict):
+                            normalised_changes.append(dict(entry))
+                    state_change_lookup[page_number] = normalised_changes
             raw_text_buffers = resources.get("page_text_buffers")
             if isinstance(raw_text_buffers, list):
                 text_buffers = [entry for entry in raw_text_buffers if isinstance(entry, dict)]
@@ -384,6 +400,21 @@ class ConversionPipeline:
                     command_summary = command_summary_lookup.get(content.page_number)
                 if command_summary is not None:
                     target_buffer["content_command_summary"] = dict(command_summary)
+            if state_change_lookup is not None:
+                state_changes = state_change_lookup.get(index)
+                if state_changes is None:
+                    state_changes = state_change_lookup.get(content.page_number)
+                if state_changes is not None:
+                    target_buffer["text_state_changes"] = list(state_changes)
+                    target_buffer["text_state_change_count"] = len(state_changes)
+                    target_buffer["font_state_changes"] = sum(
+                        1 for entry in state_changes if entry.get("operator") == "Tf"
+                    )
+                    target_buffer["position_state_changes"] = sum(
+                        1
+                        for entry in state_changes
+                        if entry.get("operator") in {"Td", "TD", "Tm", "T*"}
+                    )
             if text_buffer_lookup is not None:
                 text_buffer = text_buffer_lookup.get(index)
             else:
@@ -436,6 +467,10 @@ class ConversionPipeline:
                         "lines": lines,
                         "paths": paths,
                         "commands": command_count if command_count is not None else 0,
+                        "text_state_changes": buffer.get(
+                            "text_state_change_count",
+                            len(buffer.get("text_state_changes", ())),
+                        ),
                     }
                 )
             resources["page_content_summary"] = summaries
@@ -620,6 +655,10 @@ class ConversionPipeline:
                 "content_commands": [],
                 "content_command_count": 0,
                 "content_command_summary": None,
+                "text_state_changes": [],
+                "text_state_change_count": 0,
+                "font_state_changes": 0,
+                "position_state_changes": 0,
             }
             buffers.append(buffer)
         resources["page_content_plan"] = plan
@@ -951,6 +990,7 @@ class ConversionPipeline:
         pages = parsed.pages
         reader = parsed.resolver.reader
         command_lookup: dict[int, list[dict[str, Any]]] = {}
+        text_state_lookup: dict[int, list[dict[str, Any]]] = {}
         summaries: list[dict[str, Any]] = []
         preview: list[str] = []
 
@@ -979,6 +1019,7 @@ class ConversionPipeline:
                 if isinstance(candidate, DictionaryObject):
                     page_dict = candidate
 
+            state_changes: list[dict[str, Any]]
             if not isinstance(page_dict, DictionaryObject):
                 commands: list[dict[str, Any]] = []
                 summary: dict[str, Any] = {
@@ -999,9 +1040,15 @@ class ConversionPipeline:
                     "marked_content_commands": 0,
                     "shading_commands": 0,
                     "operators": [],
+                    "text_state_change_count": 0,
+                    "font_state_changes": 0,
+                    "position_state_changes": 0,
                 }
+                state_changes = []
             else:
-                commands, summary = summarise_content_stream_commands(page_dict, reader)
+                commands, summary, state_changes = summarise_content_stream_commands(
+                    page_dict, reader
+                )
 
             summary = dict(summary)
             summary["page_number"] = parsed_page.number
@@ -1011,6 +1058,10 @@ class ConversionPipeline:
                 dict(entry) if isinstance(entry, dict) else {"operator": entry}
                 for entry in commands
             ]
+            text_state_lookup[parsed_page.number] = [
+                dict(entry) if isinstance(entry, dict) else {"operator": entry}
+                for entry in state_changes
+            ]
             summaries.append(summary)
 
             if summary["command_count"]:
@@ -1018,10 +1069,12 @@ class ConversionPipeline:
                     "p"
                     f"{parsed_page.number + 1}="
                     f"ops:{summary['command_count']},text:{summary.get('text_show_commands', 0)}"
+                    f",state:{summary.get('text_state_change_count', 0)}"
                 )
 
         resources["page_content_commands"] = command_lookup
         resources["page_content_command_summaries"] = summaries
+        resources["page_text_state_changes"] = text_state_lookup
 
         if preview:
             if len(preview) > 3:
@@ -1030,7 +1083,8 @@ class ConversionPipeline:
                 detail_preview = preview
             detail = (
                 "Iterated content stream commands for "
-                f"{len(summaries)} page(s) ({', '.join(detail_preview)})."
+                f"{len(summaries)} page(s) ({', '.join(detail_preview)}); "
+                "tracked text state transitions."
             )
         elif summaries:
             detail = f"Iterated content stream commands for {len(summaries)} page(s) with no operators."

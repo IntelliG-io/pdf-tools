@@ -236,31 +236,40 @@ def _classify_operator(operator: bytes) -> str:
 def summarise_content_stream_commands(
     page: DictionaryObject,
     reader: PdfReader,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
     """Parse a content stream and classify each operator encountered."""
 
     try:
         content = ContentStream(page.get_contents(), reader)
     except Exception:
-        return [], {
-            "command_count": 0,
-            "recognised": 0,
-            "unknown_commands": 0,
-            "text_control_commands": 0,
-            "text_state_commands": 0,
-            "text_position_commands": 0,
-            "text_show_commands": 0,
-            "graphics_state_commands": 0,
-            "color_commands": 0,
-            "path_construction_commands": 0,
-            "path_painting_commands": 0,
-            "clipping_commands": 0,
-            "inline_image_commands": 0,
-            "xobject_commands": 0,
-            "marked_content_commands": 0,
-            "shading_commands": 0,
-            "operators": [],
-        }
+        return (
+            [],
+            {
+                "command_count": 0,
+                "recognised": 0,
+                "unknown_commands": 0,
+                "text_control_commands": 0,
+                "text_state_commands": 0,
+                "text_position_commands": 0,
+                "text_show_commands": 0,
+                "graphics_state_commands": 0,
+                "color_commands": 0,
+                "path_construction_commands": 0,
+                "path_painting_commands": 0,
+                "clipping_commands": 0,
+                "inline_image_commands": 0,
+                "xobject_commands": 0,
+                "marked_content_commands": 0,
+                "shading_commands": 0,
+                "operators": [],
+            },
+            [],
+        )
+
+    resources = page.get(NameObject("/Resources"))
+    fonts_dict = None
+    if isinstance(resources, DictionaryObject):
+        fonts_dict = resources.get(NameObject("/Font"))
 
     operations = getattr(content, "operations", [])
     commands: list[dict[str, Any]] = []
@@ -282,20 +291,220 @@ def summarise_content_stream_commands(
     }
     operators_seen: set[str] = set()
 
+    matrix_stack: list[tuple[float, float, float, float, float, float]] = [
+        ContentStreamState.IDENTITY_MATRIX
+    ]
+    text_matrix: tuple[float, float, float, float, float, float] | None = None
+    line_matrix: tuple[float, float, float, float, float, float] | None = None
+    current_font_ref: NameObject | None = None
+    current_font_name: str | None = None
+    current_font_size: float | None = None
+    leading: float = 0.0
+    text_state_changes: list[dict[str, Any]] = []
+    last_position: tuple[float, float] = (0.0, 0.0)
+
+    def _resolve_font(ref: object | None) -> tuple[str | None, NameObject | None]:
+        if ref is None or not isinstance(fonts_dict, DictionaryObject):
+            return None, None
+        raw_name = str(ref)
+        candidate_names = {raw_name}
+        if raw_name.startswith("/"):
+            candidate_names.add(raw_name[1:])
+        else:
+            candidate_names.add("/" + raw_name)
+        for key, value in fonts_dict.items():
+            key_name = str(key)
+            if key_name not in candidate_names and key_name.lstrip("/") not in candidate_names:
+                continue
+            resolved = value
+            if isinstance(resolved, IndirectObject):
+                try:
+                    resolved = resolved.get_object()
+                except Exception:
+                    resolved = None
+            base_font = None
+            if isinstance(resolved, DictionaryObject):
+                base_font_obj = (
+                    resolved.get(NameObject("/BaseFont"))
+                    or resolved.get("/BaseFont")
+                )
+                if base_font_obj is not None:
+                    base_font = str(base_font_obj)
+                    if base_font.startswith("/"):
+                        base_font = base_font[1:]
+            normalised_key = key if isinstance(key, NameObject) else NameObject(str(key))
+            return base_font, normalised_key
+        return None, None
+
+    def _record_position_change(
+        operator_name: str,
+        matrix: tuple[float, float, float, float, float, float],
+    ) -> None:
+        nonlocal last_position
+        try:
+            combined = _matrix_multiply(matrix_stack[-1], matrix)
+            x, y = _matrix_apply(combined, 0.0, 0.0)
+            last_position = (float(x), float(y))
+        except Exception:
+            last_position = (0.0, 0.0)
+        entry: dict[str, Any] = {
+            "operator": operator_name,
+            "position": last_position,
+            "text_matrix": tuple(matrix),
+            "ctm": tuple(matrix_stack[-1]),
+        }
+        if current_font_name is not None:
+            entry["font_name"] = current_font_name
+        if current_font_size is not None:
+            entry["font_size"] = float(current_font_size)
+        if operator_name == "TD":
+            entry["leading"] = float(leading)
+        text_state_changes.append(entry)
+
+    def _record_font_change(
+        operator_name: str,
+        font_name: str | None,
+        font_ref: NameObject | None,
+        font_size: float | None,
+        font_resource: object | None,
+    ) -> None:
+        entry: dict[str, Any] = {
+            "operator": operator_name,
+        }
+        if font_resource is not None:
+            entry["font_resource"] = str(font_resource)
+        elif font_ref is not None:
+            entry["font_resource"] = str(font_ref)
+        if font_name is not None:
+            entry["font_name"] = font_name
+        if font_size is not None:
+            entry["font_size"] = float(font_size)
+        if text_matrix is not None:
+            try:
+                combined = _matrix_multiply(matrix_stack[-1], text_matrix)
+                x, y = _matrix_apply(combined, 0.0, 0.0)
+                entry["position"] = (float(x), float(y))
+            except Exception:
+                entry["position"] = last_position
+        text_state_changes.append(entry)
+
     for operands, operator in operations:
         op_bytes = _decode_operator(operator)
         category = _classify_operator(op_bytes)
         operand_count = len(operands) if isinstance(operands, (list, tuple)) else 0
-        operators_seen.add(op_bytes.decode("latin-1", "ignore"))
+        operator_name = op_bytes.decode("latin-1", "ignore")
+        operators_seen.add(operator_name)
         counts[category] = counts.get(category, 0) + 1
         commands.append(
             {
-                "operator": op_bytes.decode("latin-1", "ignore"),
+                "operator": operator_name,
                 "category": category,
                 "operand_count": operand_count,
                 "recognised": category != "unknown",
             }
         )
+
+        if op_bytes == b"q":
+            matrix_stack.append(matrix_stack[-1])
+        elif op_bytes == b"Q":
+            if len(matrix_stack) > 1:
+                matrix_stack.pop()
+        elif op_bytes == b"cm" and len(operands) == 6:
+            try:
+                matrix = tuple(float(value) for value in operands)
+                matrix_stack[-1] = _matrix_multiply(matrix_stack[-1], matrix)
+            except Exception:
+                pass
+        elif op_bytes == b"BT":
+            text_matrix = ContentStreamState.IDENTITY_MATRIX
+            line_matrix = text_matrix
+        elif op_bytes == b"ET":
+            text_matrix = None
+            line_matrix = None
+        elif op_bytes == b"Tf" and len(operands) >= 2:
+            try:
+                font_ref_operand = operands[0]
+                font_size = float(operands[1])
+            except Exception:
+                font_ref_operand = None
+                font_size = None
+            font_name, resolved_ref = _resolve_font(font_ref_operand)
+            normalised_ref: NameObject | None
+            if resolved_ref is not None:
+                normalised_ref = resolved_ref
+            elif isinstance(font_ref_operand, NameObject):
+                normalised_ref = font_ref_operand
+            elif isinstance(font_ref_operand, str):
+                candidate = font_ref_operand
+                if not candidate.startswith("/"):
+                    candidate = f"/{candidate}"
+                try:
+                    normalised_ref = NameObject(candidate)
+                except Exception:
+                    normalised_ref = None
+            else:
+                normalised_ref = None
+            current_font_ref = normalised_ref
+            current_font_name = font_name
+            current_font_size = font_size
+            _record_font_change(
+                "Tf",
+                current_font_name,
+                current_font_ref,
+                current_font_size,
+                font_ref_operand,
+            )
+        elif op_bytes == b"Tm" and len(operands) >= 6:
+            try:
+                tm = tuple(float(operands[i]) for i in range(6))
+                text_matrix = tm
+                line_matrix = tm
+                _record_position_change("Tm", tm)
+            except Exception:
+                pass
+        elif op_bytes in {b"Td", b"TD"} and len(operands) >= 2:
+            if line_matrix is None:
+                continue
+            try:
+                tx = float(operands[0])
+                ty = float(operands[1])
+                translate = (1.0, 0.0, 0.0, 1.0, tx, ty)
+                line_matrix = _matrix_multiply(line_matrix, translate)
+                text_matrix = line_matrix
+                if op_bytes == b"TD":
+                    leading = -ty
+                _record_position_change(operator_name, line_matrix)
+            except Exception:
+                pass
+        elif op_bytes == b"T*" and line_matrix is not None:
+            try:
+                ty = -1.2 * (current_font_size or 12.0)
+                translate = (1.0, 0.0, 0.0, 1.0, 0.0, ty)
+                line_matrix = _matrix_multiply(line_matrix, translate)
+                text_matrix = line_matrix
+                _record_position_change("T*", line_matrix)
+            except Exception:
+                pass
+        elif op_bytes == b"Tc" and operands:
+            try:
+                _ = float(operands[0])
+            except Exception:
+                pass
+        elif op_bytes == b"Tw" and operands:
+            try:
+                _ = float(operands[0])
+            except Exception:
+                pass
+        elif op_bytes == b"Tz" and operands:
+            try:
+                _ = float(operands[0])
+            except Exception:
+                pass
+        elif op_bytes == b"TL" and operands:
+            try:
+                leading = float(operands[0])
+            except Exception:
+                pass
 
     summary = {
         "command_count": len(commands),
@@ -315,9 +524,16 @@ def summarise_content_stream_commands(
         "marked_content_commands": counts.get("marked_content", 0),
         "shading_commands": counts.get("shading", 0),
         "operators": sorted(operators_seen),
+        "text_state_change_count": len(text_state_changes),
+        "font_state_changes": sum(1 for entry in text_state_changes if entry.get("operator") == "Tf"),
+        "position_state_changes": sum(
+            1
+            for entry in text_state_changes
+            if entry.get("operator") in {"Td", "TD", "Tm", "T*"}
+        ),
     }
 
-    return commands, summary
+    return commands, summary, text_state_changes
 
 
 @dataclass(slots=True)

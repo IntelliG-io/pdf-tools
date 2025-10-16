@@ -395,6 +395,25 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert command_entries[-1].get("operator") == "ET"
     assert any(entry.get("category") == "text_show" for entry in command_entries)
 
+    state_change_map = context.resources.get("page_text_state_changes")
+    assert isinstance(state_change_map, dict)
+    assert 0 in state_change_map
+    state_changes = state_change_map[0]
+    assert isinstance(state_changes, list) and state_changes
+    font_changes = [entry for entry in state_changes if entry.get("operator") == "Tf"]
+    assert font_changes and font_changes[0].get("font_name") in {"Helvetica", "/Helvetica"}
+    assert font_changes[0].get("font_size") == pytest.approx(12.0)
+    position_changes = [
+        entry
+        for entry in state_changes
+        if entry.get("operator") in {"Td", "TD", "Tm"}
+    ]
+    assert position_changes
+    first_position = position_changes[0].get("position")
+    assert isinstance(first_position, tuple) and len(first_position) == 2
+    assert isinstance(first_position[0], float)
+    assert isinstance(first_position[1], float)
+
     command_summaries = context.resources.get("page_content_command_summaries")
     assert isinstance(command_summaries, list) and len(command_summaries) == 1
     command_summary_entry = command_summaries[0]
@@ -402,6 +421,9 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert command_summary_entry.get("command_count") == len(command_entries)
     assert command_summary_entry.get("text_show_commands", 0) >= 1
     assert command_summary_entry.get("recognised") == command_summary_entry.get("command_count") - command_summary_entry.get("unknown_commands", 0)
+    assert command_summary_entry.get("text_state_change_count") == len(state_changes)
+    assert command_summary_entry.get("font_state_changes", 0) == len(font_changes)
+    assert command_summary_entry.get("position_state_changes", 0) >= len(position_changes)
 
     assert buffer_entry.get("content_stream_count") == len(streams)
     assert buffer_entry.get("content_length") == len(combined_bytes)
@@ -416,6 +438,10 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     buffer_command_summary = buffer_entry.get("content_command_summary")
     assert isinstance(buffer_command_summary, dict)
     assert buffer_command_summary.get("command_count") == len(command_entries)
+    assert buffer_entry.get("text_state_change_count") == len(state_changes)
+    assert buffer_entry.get("font_state_changes") == len(font_changes)
+    assert buffer_entry.get("position_state_changes") >= len(position_changes)
+    assert buffer_entry.get("text_state_changes") == state_changes
 
     text_buffers = context.resources.get("page_text_buffers")
     assert isinstance(text_buffers, list)
@@ -461,6 +487,7 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert summary_entry.get("glyphs") == buffer_entry.get("glyph_count")
     assert summary_entry.get("images") == buffer_entry.get("image_count")
     assert summary_entry.get("commands") == len(command_entries)
+    assert summary_entry.get("text_state_changes") == buffer_entry.get("text_state_change_count")
 
     state_summaries = context.resources.get("page_content_states")
     assert isinstance(state_summaries, list) and len(state_summaries) == 1
