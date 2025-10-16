@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from math import atan2, degrees
-from typing import Iterable, Mapping, Sequence
+from typing import Any, ClassVar, Iterable, Mapping, Sequence
 
 from pypdf import PdfReader
 from pypdf._page import ContentStream
@@ -33,6 +33,7 @@ from .images import extract_page_images
 from .text import CapturedText, is_east_asian_text, text_fragments_to_blocks
 
 __all__ = [
+    "ContentStreamState",
     "capture_text_fragments",
     "extract_outline",
     "extract_vector_graphics",
@@ -84,6 +85,85 @@ def _resolve_indirect(obj: object | None) -> object | None:
         except Exception:
             return None
     return obj
+
+
+@dataclass(slots=True)
+class ContentStreamState:
+    """Graphics state snapshot for a page content stream."""
+
+    IDENTITY_MATRIX: ClassVar[tuple[float, float, float, float, float, float]] = (
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+    )
+
+    ctm: tuple[float, float, float, float, float, float] = IDENTITY_MATRIX
+    text_matrix: tuple[float, float, float, float, float, float] = IDENTITY_MATRIX
+    line_matrix: tuple[float, float, float, float, float, float] = IDENTITY_MATRIX
+    font_ref: NameObject | None = None
+    font_name: str | None = None
+    font_size: float | None = None
+    fill_color: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    stroke_color: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    character_spacing: float = 0.0
+    word_spacing: float = 0.0
+    horizontal_scaling: float = 100.0
+    leading: float = 0.0
+    text_objects: int = 0
+    graphics_stack_depth: int = 1
+    max_graphics_stack_depth: int = 1
+    last_text_position: tuple[float, float] = (0.0, 0.0)
+
+    def reset(self) -> None:
+        """Reset the graphics state to PDF specification defaults."""
+
+        self.ctm = self.IDENTITY_MATRIX
+        self.text_matrix = self.IDENTITY_MATRIX
+        self.line_matrix = self.IDENTITY_MATRIX
+        self.font_ref = None
+        self.font_name = None
+        self.font_size = None
+        self.fill_color = (0.0, 0.0, 0.0)
+        self.stroke_color = (0.0, 0.0, 0.0)
+        self.character_spacing = 0.0
+        self.word_spacing = 0.0
+        self.horizontal_scaling = 100.0
+        self.leading = 0.0
+        self.text_objects = 0
+        self.graphics_stack_depth = 1
+        self.max_graphics_stack_depth = 1
+        self.last_text_position = (0.0, 0.0)
+
+    def snapshot(self, *, page_number: int | None = None) -> dict[str, Any]:
+        """Return a serialisable view of the current graphics state."""
+
+        data: dict[str, Any] = {
+            "ctm": tuple(self.ctm),
+            "text_matrix": tuple(self.text_matrix),
+            "line_matrix": tuple(self.line_matrix),
+            "font_ref": str(self.font_ref) if self.font_ref is not None else None,
+            "font_name": self.font_name,
+            "font_size": float(self.font_size) if self.font_size is not None else None,
+            "fill_color": tuple(self.fill_color),
+            "stroke_color": tuple(self.stroke_color),
+            "character_spacing": float(self.character_spacing),
+            "word_spacing": float(self.word_spacing),
+            "horizontal_scaling": float(self.horizontal_scaling),
+            "leading": float(self.leading),
+            "text_objects": int(self.text_objects),
+            "graphics_stack_depth": int(self.graphics_stack_depth),
+            "max_graphics_stack_depth": int(self.max_graphics_stack_depth),
+            "last_text_position": (
+                float(self.last_text_position[0]),
+                float(self.last_text_position[1]),
+            ),
+        }
+        if page_number is not None:
+            data["page_number"] = page_number
+        return data
 
 
 @dataclass(slots=True)
@@ -544,18 +624,27 @@ def _outline_node_from_entry(
     )
 
 
-def capture_text_fragments(page: DictionaryObject, reader: PdfReader) -> list[CapturedText]:
+def capture_text_fragments(
+    page: DictionaryObject,
+    reader: PdfReader,
+    state: ContentStreamState | None = None,
+) -> list[CapturedText]:
     fragments: list[CapturedText] = []
     font_maps = font_translation_maps(page)
     try:
         content = ContentStream(page.get_contents(), reader)
     except Exception:
+        if state is not None:
+            state.reset()
         return []
 
     resources = page.get(NameObject("/Resources"))
     fonts_dict = None
     if isinstance(resources, DictionaryObject):
         fonts_dict = resources.get(NameObject("/Font"))
+
+    working_state = state or ContentStreamState()
+    working_state.reset()
 
     def _rgb_tuple_to_hex(color: tuple[float, float, float]) -> str:
         r = int(round(max(0.0, min(color[0], 1.0)) * 255))
@@ -564,13 +653,24 @@ def capture_text_fragments(page: DictionaryObject, reader: PdfReader) -> list[Ca
         return f"{r:02X}{g:02X}{b:02X}"
 
     matrix_stack: list[tuple[float, float, float, float, float, float]] = [
-        (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+        working_state.IDENTITY_MATRIX
     ]
-    text_matrix: tuple[float, float, float, float, float, float] | None = None
-    line_matrix: tuple[float, float, float, float, float, float] | None = None
+    text_matrix: tuple[float, float, float, float, float, float] | None = (
+        working_state.IDENTITY_MATRIX
+    )
+    line_matrix: tuple[float, float, float, float, float, float] | None = (
+        working_state.IDENTITY_MATRIX
+    )
     current_font_ref: NameObject | None = None
     current_font_size: float | None = None
     current_fill_color: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    current_stroke_color: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    character_spacing = 0.0
+    word_spacing = 0.0
+    horizontal_scaling = 100.0
+    leading = 0.0
+    text_objects = 0
+    max_stack_depth = 1
 
     def _resolve_font(n: NameObject | None) -> DictionaryObject | None:
         if n is None or not isinstance(fonts_dict, DictionaryObject):
@@ -589,7 +689,7 @@ def capture_text_fragments(page: DictionaryObject, reader: PdfReader) -> list[Ca
         nonlocal text_matrix, current_font_ref, current_font_size
         if not raw:
             return
-        tm = text_matrix or (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+        tm = text_matrix or working_state.IDENTITY_MATRIX
         combined = _matrix_multiply(matrix_stack[-1], tm)
         x, y = _matrix_apply(combined, 0.0, 0.0)
         font_obj = _resolve_font(current_font_ref)
@@ -627,24 +727,30 @@ def capture_text_fragments(page: DictionaryObject, reader: PdfReader) -> list[Ca
                 color=color_hex,
             )
         )
+        working_state.last_text_position = (float(x), float(y))
+        if base_font is not None:
+            working_state.font_name = base_font
 
     operations = getattr(content, "operations", [])
     for operands, operator in operations:
         op = operator
         if op == b"q":
             matrix_stack.append(matrix_stack[-1])
+            if len(matrix_stack) > max_stack_depth:
+                max_stack_depth = len(matrix_stack)
         elif op == b"Q":
             if len(matrix_stack) > 1:
                 matrix_stack.pop()
         elif op == b"cm" and len(operands) == 6:
             try:
                 matrix = tuple(float(value) for value in operands)
-                matrix_stack[-1] = _matrix_multiply(matrix_stack[-1], matrix)  
+                matrix_stack[-1] = _matrix_multiply(matrix_stack[-1], matrix)
             except Exception:
                 pass
         elif op == b"BT":
-            text_matrix = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+            text_matrix = working_state.IDENTITY_MATRIX
             line_matrix = text_matrix
+            text_objects += 1
         elif op == b"ET":
             text_matrix = None
             line_matrix = None
@@ -683,6 +789,26 @@ def capture_text_fragments(page: DictionaryObject, reader: PdfReader) -> list[Ca
                 text_matrix = line_matrix
             except Exception:
                 pass
+        elif op == b"Tc" and operands:
+            try:
+                character_spacing = float(operands[0])
+            except Exception:
+                character_spacing = character_spacing
+        elif op == b"Tw" and operands:
+            try:
+                word_spacing = float(operands[0])
+            except Exception:
+                word_spacing = word_spacing
+        elif op == b"Tz" and operands:
+            try:
+                horizontal_scaling = float(operands[0])
+            except Exception:
+                horizontal_scaling = horizontal_scaling
+        elif op == b"TL" and operands:
+            try:
+                leading = float(operands[0])
+            except Exception:
+                leading = leading
         elif op == b"Tj" and operands:
             s = operands[0]
             try:
@@ -703,6 +829,11 @@ def capture_text_fragments(page: DictionaryObject, reader: PdfReader) -> list[Ca
                     parts.append(item)
             if parts:
                 _emit_text("".join(parts))
+        elif op == b"RG" and len(operands) >= 3:
+            try:
+                current_stroke_color = _rgb_color(operands[:3])
+            except Exception:
+                pass
         elif op in {b"rg", b"sc", b"scn"} and len(operands) >= 3:
             try:
                 r = float(operands[0])
@@ -738,6 +869,48 @@ def capture_text_fragments(page: DictionaryObject, reader: PdfReader) -> list[Ca
                 current_fill_color = (r, g, b)
             except Exception:
                 pass
+        elif op == b"G" and operands:
+            try:
+                v = float(operands[0])
+                v = max(0.0, min(v, 1.0))
+                current_stroke_color = (v, v, v)
+            except Exception:
+                pass
+        elif op == b"K" and len(operands) >= 4:
+            try:
+                current_stroke_color = _cmyk_color(operands[:4])
+            except Exception:
+                pass
+        elif op in {b"SC", b"SCN"} and operands:
+            generic = _generic_color(operands)
+            if generic is not None:
+                current_stroke_color = generic
+
+    working_state.ctm = matrix_stack[-1]
+    working_state.text_matrix = text_matrix or working_state.IDENTITY_MATRIX
+    working_state.line_matrix = line_matrix or working_state.IDENTITY_MATRIX
+    working_state.font_ref = current_font_ref
+    working_state.font_size = current_font_size
+    working_state.fill_color = current_fill_color
+    working_state.stroke_color = current_stroke_color
+    working_state.character_spacing = character_spacing
+    working_state.word_spacing = word_spacing
+    working_state.horizontal_scaling = horizontal_scaling
+    working_state.leading = leading
+    working_state.text_objects = text_objects
+    working_state.graphics_stack_depth = len(matrix_stack)
+    working_state.max_graphics_stack_depth = max_stack_depth
+
+    if state is None:
+        # Ensure standalone calls leave the state with a sensible default font name.
+        font_obj = _resolve_font(current_font_ref)
+        if isinstance(font_obj, DictionaryObject):
+            base_font_obj = font_obj.get(NameObject("/BaseFont"))
+            if base_font_obj is not None:
+                base_font = str(base_font_obj)
+                if base_font.startswith("/"):
+                    base_font = base_font[1:]
+                working_state.font_name = base_font
 
     return fragments
 

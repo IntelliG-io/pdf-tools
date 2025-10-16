@@ -141,7 +141,12 @@ class ConversionPipeline:
             detail = "No pages selected; prepared empty page content buffers."
         self._advance_logger(logger, detail)
         interpret_start = perf_counter()
-        interpreter = self._interpreter_factory(parsed)
+        interpreter = self._initialise_content_stream_parser(
+            parsed,
+            page_numbers,
+            logger=logger,
+            resources=resources,
+        )
         page_contents = self._interpret_pages(
             interpreter,
             page_numbers,
@@ -271,9 +276,13 @@ class ConversionPipeline:
                 page_number = buffer.get("page_number") if isinstance(buffer, dict) else None
                 if isinstance(page_number, int):
                     buffer_lookup[page_number] = buffer
+        state_summaries: dict[int, dict[str, Any]] = {}
         for position, index in enumerate(page_numbers):
             content = interpreter.interpret_page(index)
             contents.append(content)
+            snapshot = interpreter.snapshot_state(content.page_number)
+            if snapshot is not None:
+                state_summaries[content.page_number] = snapshot
             if buffers is None:
                 continue
             target_buffer = None
@@ -304,6 +313,8 @@ class ConversionPipeline:
             target_buffer["image_count"] = len(content.images)
             target_buffer["line_count"] = len(content.lines)
             target_buffer["path_count"] = len(content.paths)
+            if snapshot is not None:
+                target_buffer["content_stream_state"] = snapshot
         if resources is not None and buffers is not None:
             resources["page_content_summary"] = [
                 {
@@ -316,7 +327,73 @@ class ConversionPipeline:
                 for buffer in buffers
                 if isinstance(buffer, dict)
             ]
+        if resources is not None and state_summaries:
+            resources["page_content_states"] = list(state_summaries.values())
         return contents
+
+    def _initialise_content_stream_parser(
+        self,
+        parsed: ParsedDocument,
+        page_numbers: Sequence[int],
+        *,
+        logger: PipelineLogger,
+        resources: dict[str, Any],
+    ) -> PDFContentInterpreter:
+        """Initialise the content interpreter with default graphics state."""
+
+        interpreter = self._interpreter_factory(parsed)
+        default_state_summary: dict[str, Any] | None = None
+        if hasattr(interpreter, "default_state"):
+            try:
+                default_state = interpreter.default_state()  # type: ignore[attr-defined]
+            except Exception:  # pragma: no cover - defensive fallback
+                default_state = None
+            if default_state is not None:
+                try:
+                    default_state_summary = default_state.snapshot()
+                except Exception:  # pragma: no cover - defensive fallback
+                    default_state_summary = None
+        if default_state_summary is None:
+            default_state_summary = {
+                "ctm": (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+                "text_matrix": (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+                "line_matrix": (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+                "font_ref": None,
+                "font_name": None,
+                "font_size": None,
+                "fill_color": (0.0, 0.0, 0.0),
+                "stroke_color": (0.0, 0.0, 0.0),
+                "character_spacing": 0.0,
+                "word_spacing": 0.0,
+                "horizontal_scaling": 100.0,
+                "leading": 0.0,
+                "text_objects": 0,
+                "graphics_stack_depth": 1,
+                "max_graphics_stack_depth": 1,
+                "last_text_position": (0.0, 0.0),
+            }
+
+        plan: list[dict[str, Any]] = []
+        for ordinal, page_number in enumerate(page_numbers):
+            entry = {
+                "page_number": page_number,
+                "ordinal": ordinal,
+                "initial_state": dict(default_state_summary),
+            }
+            plan.append(entry)
+
+        resources["content_stream_parser_plan"] = plan
+        resources["content_stream_default_state"] = dict(default_state_summary)
+
+        if plan:
+            detail = (
+                "Initialised content stream parser with default graphics state "
+                f"for {len(plan)} page(s)."
+            )
+        else:
+            detail = "No pages selected; content stream parser initialised with empty plan."
+        self._advance_logger(logger, detail)
+        return interpreter
 
     def _prepare_page_content_buffers(
         self,

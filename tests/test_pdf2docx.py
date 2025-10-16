@@ -317,6 +317,21 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     plan = context.resources.get("page_content_plan")
     assert plan == [0]
 
+    parser_plan = context.resources.get("content_stream_parser_plan")
+    assert isinstance(parser_plan, list)
+    assert len(parser_plan) == 1
+    parser_entry = parser_plan[0]
+    assert parser_entry.get("page_number") == 0
+    assert parser_entry.get("ordinal") == 0
+    initial_state = parser_entry.get("initial_state")
+    assert isinstance(initial_state, dict)
+    assert initial_state.get("ctm") == (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    assert initial_state.get("text_matrix") == (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    assert initial_state.get("font_ref") is None
+    default_state = context.resources.get("content_stream_default_state")
+    assert isinstance(default_state, dict)
+    assert default_state == initial_state
+
     buffers = context.resources.get("page_content_buffers")
     assert isinstance(buffers, list)
     assert len(buffers) == 1
@@ -378,6 +393,19 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert summary_entry.get("page_number") == 0
     assert summary_entry.get("glyphs") == buffer_entry.get("glyph_count")
     assert summary_entry.get("images") == buffer_entry.get("image_count")
+
+    state_summaries = context.resources.get("page_content_states")
+    assert isinstance(state_summaries, list) and len(state_summaries) == 1
+    state_entry = state_summaries[0]
+    assert state_entry.get("page_number") == 0
+    assert state_entry.get("text_objects", 0) >= 1
+    assert state_entry.get("graphics_stack_depth") == 1
+    assert state_entry.get("max_graphics_stack_depth", 0) >= 1
+    assert state_entry.get("font_name")
+    assert state_entry.get("fill_color") == (0.0, 0.0, 0.0)
+
+    interpreter_state = buffer_entry.get("content_stream_state")
+    assert interpreter_state == state_entry
 
 
 def test_pdf_document_primitives_conversion(tmp_path: Path) -> None:

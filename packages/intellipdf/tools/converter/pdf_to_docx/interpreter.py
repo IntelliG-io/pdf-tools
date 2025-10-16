@@ -10,7 +10,11 @@ import copy
 from pypdf.generic import DictionaryObject
 
 from intellipdf.core.parser import ParsedDocument, ParsedPage
-from .converter.reader import capture_text_fragments, extract_vector_graphics
+from .converter.reader import (
+    ContentStreamState,
+    capture_text_fragments,
+    extract_vector_graphics,
+)
 from .converter.images import extract_page_images
 from .converter import ConversionMetadata, ConversionOptions, ConversionResult, PdfToDocxConverter
 from .primitives import BoundingBox, Image as PrimitiveImage, Line as PrimitiveLine, Path as PrimitivePath
@@ -98,6 +102,7 @@ class PDFContentInterpreter:
     def __init__(self, document: ParsedDocument) -> None:
         self.document = document
         self._reader = document.resolver.reader
+        self._page_states: dict[int, ContentStreamState] = {}
 
     def interpret_page(self, page: ParsedPage | int) -> PageContent:
         """Interpret a :class:`ParsedPage` (or page index) into primitives."""
@@ -116,7 +121,8 @@ class PDFContentInterpreter:
         if page_obj is None:
             return content
 
-        fragments = capture_text_fragments(page_obj, self._reader)
+        state = self._initialise_page_state(parsed.number)
+        fragments = capture_text_fragments(page_obj, self._reader, state=state)
         images = extract_page_images(page_obj, self._reader)
         lines, paths = extract_vector_graphics(page_obj, self._reader)
 
@@ -141,6 +147,23 @@ class PDFContentInterpreter:
             return self._reader.pages[page.number]  # type: ignore[index]
         except Exception:
             return None
+
+    def _initialise_page_state(self, page_number: int) -> ContentStreamState:
+        state = ContentStreamState()
+        state.reset()
+        self._page_states[page_number] = state
+        return state
+
+    def snapshot_state(self, page_number: int) -> dict[str, Any] | None:
+        state = self._page_states.get(page_number)
+        if state is None:
+            return None
+        return state.snapshot(page_number=page_number)
+
+    def default_state(self) -> ContentStreamState:
+        state = ContentStreamState()
+        state.reset()
+        return state
 
     def _page_dimensions(self, geometry) -> tuple[float, float]:
         left, bottom, right, top = geometry.media_box
