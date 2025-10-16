@@ -98,7 +98,13 @@ def _png_bytes(width: int, height: int, color: tuple[int, int, int, int] = (255,
     idat = chunk(b"IDAT", payload)
     iend = chunk(b"IEND", b"")
     return signature + ihdr + idat + iend
-def _create_pdf(path: Path, text: str, metadata: dict[str, str] | None = None) -> None:
+def _create_pdf(
+    path: Path,
+    text: str,
+    metadata: dict[str, str] | None = None,
+    *,
+    password: str | None = None,
+) -> None:
     writer = PdfWriter()
     page = writer.add_blank_page(width=200, height=200)
 
@@ -122,6 +128,9 @@ def _create_pdf(path: Path, text: str, metadata: dict[str, str] | None = None) -
 
     if metadata:
         writer.add_metadata(metadata)
+
+    if password:
+        writer.encrypt(password)
 
     with path.open("wb") as fh:
         writer.write(fh)
@@ -161,6 +170,27 @@ def test_pdf_to_docx_conversion(tmp_path: Path, text: str) -> None:
     combined_text = " ".join(texts)
     for token in text.replace("\n", " ").split():
         assert token in combined_text
+
+
+def test_pdf_to_docx_encrypted_requires_password(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "encrypted.pdf"
+    _create_pdf(pdf_path, "Secret PDF", password="letmein")
+
+    with pytest.raises(ValueError, match="requires a password"):
+        convert_document(pdf_path, tmp_path / "encrypted.docx")
+
+
+def test_pdf_to_docx_encrypted_with_password(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "encrypted.pdf"
+    _create_pdf(pdf_path, "Secret PDF", password="letmein")
+
+    docx_path = tmp_path / "encrypted.docx"
+    options = ConversionOptions(password="letmein")
+    result = convert_document(pdf_path, docx_path, options=options)
+
+    assert result.output_path == docx_path.resolve()
+    assert result.page_count == 1
+    _assert_pipeline_log(result)
 
 
 def test_pdf_document_primitives_conversion(tmp_path: Path) -> None:

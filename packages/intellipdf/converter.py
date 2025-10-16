@@ -104,7 +104,7 @@ class ConversionPipeline:
 
         # -- Stage 1: Parse -------------------------------------------------
         parser = self._parser_factory(source_path)
-        self._open_pdf_document(parser, logger, resources)
+        self._open_pdf_document(parser, logger, resources, context)
         parse_start = perf_counter()
         parsed = parser.parse()
         timings.parse_ms = (perf_counter() - parse_start) * 1000.0
@@ -277,6 +277,8 @@ class ConversionPipeline:
 
     def _build_default_configuration(self) -> dict[str, Any]:
         options_snapshot = asdict(self.options)
+        if "password" in options_snapshot and options_snapshot["password"]:
+            options_snapshot["password"] = "***"
         default_styles_attr = getattr(self._generator, "DEFAULT_STYLES", ())
         if isinstance(default_styles_attr, dict):
             default_styles: Any = dict(default_styles_attr)
@@ -346,11 +348,24 @@ class ConversionPipeline:
 
         return pdf_version
 
+    def _resolve_pdf_password(self, context: ConversionContext | None) -> str | None:
+        if getattr(self.options, "password", None):
+            return self.options.password
+        if context is not None:
+            config = getattr(context, "config", {})
+            if isinstance(config, dict):
+                for key in ("password", "pdf_password", "user_password"):
+                    value = config.get(key)
+                    if value:
+                        return str(value)
+        return None
+
     def _open_pdf_document(
         self,
         parser: PDFParser,
         logger: PipelineLogger,
         resources: dict[str, Any],
+        context: ConversionContext | None,
     ) -> None:
         """Open the PDF resource in binary mode via the parser and record it."""
 
@@ -365,6 +380,28 @@ class ConversionPipeline:
         if stream is not None:
             resources["pdf_stream"] = stream
 
+        encrypted = bool(getattr(reader, "is_encrypted", False))
+        resources["pdf_encrypted"] = encrypted
+        password = None
+        if encrypted:
+            password = self._resolve_pdf_password(context)
+            if not password:
+                raise ValueError(
+                    "Input PDF is encrypted and requires a password for conversion."
+                )
+            try:
+                status = reader.decrypt(password)
+            except Exception as exc:  # pragma: no cover - delegated to parser/lib
+                message = f"Unable to decrypt encrypted PDF '{parser.source}': {exc}"
+                raise RuntimeError(message) from exc
+            if status == 0:
+                raise ValueError(
+                    "Provided password could not decrypt the encrypted PDF document."
+                )
+            resources["pdf_password_provided"] = True
+        else:
+            resources["pdf_password_provided"] = False
+
         page_hint = 0
         try:
             page_hint = len(getattr(reader, "pages", []) or [])
@@ -372,10 +409,16 @@ class ConversionPipeline:
             page_hint = 0
 
         detail = "Opened input PDF in binary mode via parser backend."
+        suffix_parts: list[str] = []
+        if encrypted:
+            suffix_parts.append("decrypted with supplied password")
         if page_hint:
+            suffix_parts.append(f"page_hint={page_hint}")
+        if suffix_parts:
             detail = (
-                f"Opened input PDF in binary mode via parser backend "
-                f"(page_hint={page_hint})."
+                "Opened input PDF in binary mode via parser backend ("
+                + ", ".join(suffix_parts)
+                + ")."
             )
         self._advance_logger(logger, detail)
 
