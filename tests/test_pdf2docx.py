@@ -208,6 +208,13 @@ def test_conversion_pipeline_records_cross_reference(tmp_path: Path) -> None:
     assert result.output_path == docx_path.resolve()
     assert context.resources.get("pdf_startxref", 0) > 0
     assert context.resources.get("pdf_cross_reference_kind") in {"table", "stream"}
+    trailer_info = context.resources.get("pdf_trailer_info")
+    assert trailer_info
+    assert trailer_info.get("root_ref") is not None
+    assert context.resources.get("pdf_trailer")
+    assert context.resources.get("pdf_trailer_dereferenced")
+    if trailer_info.get("size") is not None:
+        assert context.resources.get("pdf_object_count") == trailer_info.get("size")
 
 
 def test_pdf_document_primitives_conversion(tmp_path: Path) -> None:

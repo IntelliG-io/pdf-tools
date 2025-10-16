@@ -106,6 +106,7 @@ class ConversionPipeline:
         parser = self._parser_factory(source_path)
         self._open_pdf_document(parser, logger, resources, context)
         startxref, xref_kind = self._locate_cross_reference(parser, logger, resources)
+        self._read_trailer(parser, logger, resources)
         parse_start = perf_counter()
         parsed = parser.parse()
         timings.parse_ms = (perf_counter() - parse_start) * 1000.0
@@ -447,6 +448,57 @@ class ConversionPipeline:
         )
         self._advance_logger(logger, detail)
         return startxref, xref_kind
+
+    def _read_trailer(
+        self,
+        parser: PDFParser,
+        logger: PipelineLogger,
+        resources: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Parse the PDF trailer dictionary and capture summary details."""
+
+        try:
+            trailer_info = parser.read_trailer()
+        except Exception as exc:  # pragma: no cover - delegated to parser/lib
+            message = f"Unable to parse PDF trailer dictionary for '{parser.source}': {exc}"
+            raise RuntimeError(message) from exc
+
+        entries = trailer_info.get("entries") or {}
+        resources.setdefault("pdf_trailer", entries)
+        resources.setdefault("pdf_trailer_info", trailer_info)
+
+        entries_dereferenced = trailer_info.get("entries_dereferenced")
+        if entries_dereferenced:
+            resources.setdefault("pdf_trailer_dereferenced", entries_dereferenced)
+
+        root_ref = trailer_info.get("root_ref")
+        if root_ref is not None:
+            resources.setdefault("pdf_catalog_ref", root_ref)
+
+        size = trailer_info.get("size")
+        if size is not None:
+            resources.setdefault("pdf_object_count", size)
+
+        hybrid = trailer_info.get("hybrid_xref_offset")
+        sources = trailer_info.get("sources")
+
+        detail_parts: list[str] = []
+        if size is not None:
+            detail_parts.append(f"size={size}")
+        if root_ref is not None:
+            detail_parts.append(f"root_ref={root_ref[0]} {root_ref[1]}")
+        if hybrid is not None:
+            detail_parts.append(f"hybrid_xref_offset={hybrid}")
+        if sources:
+            detail_parts.append("sources=" + ",".join(str(source) for source in sources))
+
+        if detail_parts:
+            detail = "Parsed PDF trailer dictionary (" + ", ".join(detail_parts) + ")."
+        else:
+            detail = "Parsed PDF trailer dictionary."
+
+        self._advance_logger(logger, detail)
+        return trailer_info
 
 
 # ---------------------------------------------------------------------- #

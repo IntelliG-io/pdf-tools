@@ -10,6 +10,7 @@ retaining access to the underlying reader for advanced consumers.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 import re
 from typing import Any, Iterable, Mapping, Sequence
@@ -184,6 +185,11 @@ class PDFParser:
         self._parsed: ParsedDocument | None = None
         self._startxref: int | None = None
         self._xref_kind: str | None = None
+        self._cross_reference_cache: (
+            tuple[dict[tuple[int, int], int], tuple[DictionaryObject, ...]]
+            | None
+        ) = None
+        self._trailer_info: dict[str, Any] | None = None
         if preload:
             self.load()
 
@@ -234,6 +240,7 @@ class PDFParser:
         reader = self.reader
 
         object_offsets = self._build_object_offsets(reader, raw_bytes, startxref)
+        trailer_info = self.read_trailer()
         resolver = ObjectResolver(reader=reader, offsets=object_offsets)
 
         info_dict = self._extract_info(reader)
@@ -241,7 +248,7 @@ class PDFParser:
         metadata_raw = _merge_dicts(info_dict, xmp_dict)
         metadata = {key: str(value) for key, value in metadata_raw.items()}
 
-        trailer = self._to_python(reader.trailer, dereference=True)
+        trailer = trailer_info.get("entries_dereferenced") or {}
         root_obj = reader.trailer.get(NameObject("/Root"))
         root = self._to_python(root_obj, dereference=True)
 
@@ -319,7 +326,7 @@ class PDFParser:
         data: bytes,
         startxref: int,
     ) -> dict[tuple[int, int], int]:
-        offsets = self._parse_cross_reference(reader, data, startxref)
+        offsets, _ = self._parse_cross_reference(reader, data, startxref)
         if offsets:
             # Supplement any missing entries (such as compressed object streams)
             # with the offsets known to PyPDF.  This keeps the mapping exhaustive
@@ -379,16 +386,103 @@ class PDFParser:
             pass
         return inferred
 
+    def read_trailer(self) -> dict[str, Any]:
+        """Parse and cache the PDF trailer dictionary."""
+
+        if self._trailer_info is not None:
+            return dict(self._trailer_info)
+
+        raw_bytes = self._load_bytes()
+        startxref, _ = self.locate_cross_reference()
+        reader = self.reader
+        _, trailers = self._parse_cross_reference(reader, raw_bytes, startxref)
+
+        trailer_dict: DictionaryObject | None = None
+        for candidate in trailers:
+            if isinstance(candidate, DictionaryObject):
+                trailer_dict = candidate
+                break
+
+        if trailer_dict is None:
+            try:
+                trailer_dict = reader.trailer  # type: ignore[assignment]
+            except Exception:
+                trailer_dict = None
+
+        entries: dict[str, Any] = {}
+        entries_dereferenced: dict[str, Any] = {}
+        root_ref: tuple[int, int] | None = None
+        size: int | None = None
+        document_id: Any | None = None
+        hybrid_offset: int | None = None
+
+        if isinstance(trailer_dict, DictionaryObject):
+            for key, value in trailer_dict.items():
+                name = str(key)
+                entries[name] = self._to_python(value, dereference=False)
+                entries_dereferenced[name] = self._to_python(value, dereference=True)
+
+            root_obj = trailer_dict.get(NameObject("/Root"))
+            if isinstance(root_obj, IndirectObject):
+                root_ref = (root_obj.idnum, root_obj.generation)
+
+            size_obj = trailer_dict.get(NameObject("/Size"))
+            if isinstance(size_obj, (int, float)):
+                size = int(size_obj)
+
+            id_obj = trailer_dict.get(NameObject("/ID"))
+            id_value = self._to_python(id_obj, dereference=False)
+            if isinstance(id_value, list):
+                document_id = id_value
+
+            xref_stream_obj = trailer_dict.get(NameObject("/XRefStm"))
+            if isinstance(xref_stream_obj, (int, float)):
+                hybrid_offset = int(xref_stream_obj)
+            elif isinstance(xref_stream_obj, IndirectObject):
+                try:
+                    resolved = xref_stream_obj.get_object()
+                except Exception:
+                    resolved = None
+                if isinstance(resolved, (int, float)):
+                    hybrid_offset = int(resolved)
+
+        sources: list[str] = []
+        if trailers:
+            for candidate in trailers:
+                sources.append(
+                    "xref_stream" if isinstance(candidate, StreamObject) else "xref_table"
+                )
+
+        trailer_info = {
+            "entries": entries,
+            "entries_dereferenced": entries_dereferenced,
+            "root_ref": root_ref,
+            "size": size,
+            "document_id": document_id,
+            "hybrid_xref_offset": hybrid_offset,
+        }
+        if sources:
+            trailer_info["sources"] = sources
+
+        self._trailer_info = dict(trailer_info)
+        return dict(trailer_info)
+
     def _parse_cross_reference(
         self,
         reader: PdfReader,
         data: bytes,
         startxref: int,
-    ) -> dict[tuple[int, int], int]:
+    ) -> tuple[dict[tuple[int, int], int], list[DictionaryObject]]:
+        if self._cross_reference_cache is not None:
+            cached_offsets, cached_trailers = self._cross_reference_cache
+            return dict(cached_offsets), list(cached_trailers)
+
         if startxref < 0 or startxref >= len(data):
-            return {}
+            self._cross_reference_cache = ({}, tuple())
+            return {}, []
 
         offsets: dict[tuple[int, int], int] = {}
+        trailers: list[DictionaryObject] = []
         visited: set[int] = set()
         next_offset: int | None = startxref
 
@@ -396,24 +490,32 @@ class PDFParser:
             visited.add(next_offset)
             view = data[next_offset:]
             if view.startswith(b"xref"):
-                section_offsets, prev = self._parse_xref_table_section(data, next_offset)
+                section_offsets, prev, trailer_dict = self._parse_xref_table_section(
+                    reader, data, next_offset
+                )
             else:
-                section_offsets, prev = self._parse_xref_stream_section(reader, data, next_offset)
+                section_offsets, prev, trailer_dict = self._parse_xref_stream_section(
+                    reader, data, next_offset
+                )
 
             for key, value in section_offsets.items():
                 # Later revisions override earlier ones; only record the first
                 # occurrence we encounter while walking ``startxref`` backwards.
                 offsets.setdefault(key, value)
 
+            if trailer_dict is not None:
+                trailers.append(trailer_dict)
+
             if prev is None:
                 break
             next_offset = int(prev)
 
-        return offsets
+        self._cross_reference_cache = (dict(offsets), tuple(trailers))
+        return dict(offsets), list(trailers)
 
     def _parse_xref_table_section(
-        self, data: bytes, start: int
-    ) -> tuple[dict[tuple[int, int], int], int | None]:
+        self, reader: PdfReader, data: bytes, start: int
+    ) -> tuple[dict[tuple[int, int], int], int | None, DictionaryObject | None]:
         offsets: dict[tuple[int, int], int] = {}
         length = len(data)
         index = start + len(b"xref")
@@ -424,8 +526,9 @@ class PDFParser:
                 index += 7
                 index = _skip_ws(data, index)
                 dictionary_bytes, _ = self._extract_pdf_dictionary(data, index)
+                dictionary = self._decode_trailer_dictionary(reader, dictionary_bytes)
                 prev = self._parse_prev_from_dictionary(dictionary_bytes)
-                return offsets, prev
+                return offsets, prev, dictionary
             try:
                 start_obj, index = _read_int(data, index)
                 count, index = _read_int(data, index)
@@ -449,19 +552,19 @@ class PDFParser:
                     index += 1
             index = _skip_ws(data, index)
 
-        return offsets, None
+        return offsets, None, None
 
     def _parse_xref_stream_section(
         self,
         reader: PdfReader,
         data: bytes,
         start: int,
-    ) -> tuple[dict[tuple[int, int], int], int | None]:
+    ) -> tuple[dict[tuple[int, int], int], int | None, DictionaryObject | None]:
         offsets: dict[tuple[int, int], int] = {}
         view = data[start:]
         header = re.match(rb"\s*(\d+)\s+(\d+)\s+obj", view)
         if not header:
-            return offsets, None
+            return offsets, None, None
 
         obj_num = int(header.group(1))
         generation = int(header.group(2))
@@ -469,10 +572,10 @@ class PDFParser:
         try:
             stream_obj = reader.get_object(IndirectObject(obj_num, generation, reader))
         except Exception:
-            return offsets, None
+            return offsets, None, None
 
         if not isinstance(stream_obj, StreamObject):
-            return offsets, None
+            return offsets, None, None
 
         try:
             decoded = stream_obj.get_data()  # type: ignore[call-arg]
@@ -482,13 +585,13 @@ class PDFParser:
 
         widths_obj = stream_obj.get(NameObject("/W"))
         if not isinstance(widths_obj, ArrayObject):
-            return offsets, self._parse_prev_from_dictionary(stream_obj)
+            return offsets, self._parse_prev_from_dictionary(stream_obj), stream_obj
         widths = [int(w) for w in widths_obj]
         if len(widths) != 3:
-            return offsets, self._parse_prev_from_dictionary(stream_obj)
+            return offsets, self._parse_prev_from_dictionary(stream_obj), stream_obj
         entry_width = sum(widths)
         if entry_width <= 0:
-            return offsets, self._parse_prev_from_dictionary(stream_obj)
+            return offsets, self._parse_prev_from_dictionary(stream_obj), stream_obj
 
         size_obj = stream_obj.get(NameObject("/Size"))
         size = int(size_obj) if isinstance(size_obj, (int, float)) else 0
@@ -530,7 +633,7 @@ class PDFParser:
                 break
 
         prev = self._parse_prev_from_dictionary(stream_obj)
-        return offsets, prev
+        return offsets, prev, stream_obj
 
     def _parse_prev_from_dictionary(self, dictionary: Any) -> int | None:
         if isinstance(dictionary, (bytes, bytearray)):
@@ -553,6 +656,16 @@ class PDFParser:
             return None
 
         return None
+
+    def _decode_trailer_dictionary(
+        self, reader: PdfReader, dictionary_bytes: bytes
+    ) -> DictionaryObject | None:
+        stream = BytesIO(dictionary_bytes)
+        try:
+            dictionary = DictionaryObject.read_from_stream(stream, reader)
+        except Exception:
+            return None
+        return dictionary
 
     def _extract_pdf_dictionary(self, data: bytes, start: int) -> tuple[bytes, int]:
         depth = 0

@@ -33,9 +33,12 @@ def test_pdf_parser_builds_parsed_document(tmp_path):
     assert xref_kind == "table"
     document = parser.parse()
 
-    raw_offsets = parser._parse_cross_reference(
+    raw_offsets, trailers = parser._parse_cross_reference(
         parser.reader, pdf_path.read_bytes(), document.startxref
     )
+
+    assert trailers
+    trailer_info = parser.read_trailer()
 
     assert document.version.startswith("1.")
     assert document.page_count == 1
@@ -50,6 +53,12 @@ def test_pdf_parser_builds_parsed_document(tmp_path):
     assert page.object_ref is not None
     assert raw_offsets.get(page.object_ref) is not None
     assert document.object_offsets.get(page.object_ref) is not None
+
+    assert trailer_info["root_ref"] is not None
+    root_ref = trailer_info["root_ref"]
+    assert trailer_info["entries"].get("/Root") == {"$ref": root_ref}
+    assert trailer_info["size"] is not None and trailer_info["size"] >= 1
+    assert document.trailer == trailer_info["entries_dereferenced"]
 
     resolved = document.resolver.resolve(page.object_ref)
     assert resolved is not None
@@ -66,7 +75,7 @@ def test_pdf_parser_handles_xref_stream(tmp_path):
     assert xref_kind == "stream"
     document = parser.parse()
 
-    raw_offsets = parser._parse_cross_reference(
+    raw_offsets, trailers = parser._parse_cross_reference(
         parser.reader, pdf_path.read_bytes(), document.startxref
     )
 
@@ -75,6 +84,9 @@ def test_pdf_parser_handles_xref_stream(tmp_path):
     assert page.object_ref is not None
     assert raw_offsets.get(page.object_ref) is not None
     assert document.object_offsets.get(page.object_ref) is not None
+
+    trailer_info = parser.read_trailer()
+    assert trailer_info["sources"][0] == "xref_stream"
 
 
 def test_pdf_parser_collects_incremental_xref_sections(tmp_path):
@@ -90,10 +102,13 @@ def test_pdf_parser_collects_incremental_xref_sections(tmp_path):
 
     parser = PDFParser(pdf_path)
     document = parser.parse()
-    raw_offsets = parser._parse_cross_reference(
+    raw_offsets, trailers = parser._parse_cross_reference(
         parser.reader, pdf_path.read_bytes(), document.startxref
     )
 
     page = document.pages[0]
     assert page.object_ref is not None
     assert raw_offsets.get(page.object_ref) is not None
+    assert len(trailers) >= 1
+    trailer_info = parser.read_trailer()
+    assert trailer_info["root_ref"] is not None
