@@ -60,6 +60,13 @@ def test_pdf_parser_builds_parsed_document(tmp_path):
     assert trailer_info["size"] is not None and trailer_info["size"] >= 1
     assert document.trailer == trailer_info["entries_dereferenced"]
 
+    catalog_info = parser.read_document_catalog()
+    assert catalog_info["catalog"]["/Type"] == "/Catalog"
+    assert catalog_info.get("catalog_ref") == root_ref
+    assert catalog_info.get("pages_ref")
+    assert catalog_info.get("pages")["/Type"] == "/Pages"
+    assert catalog_info.get("pages_count") == 1
+
     resolved = document.resolver.resolve(page.object_ref)
     assert resolved is not None
     assert page.resources == {}

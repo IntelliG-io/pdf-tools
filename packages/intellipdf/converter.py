@@ -106,7 +106,8 @@ class ConversionPipeline:
         parser = self._parser_factory(source_path)
         self._open_pdf_document(parser, logger, resources, context)
         startxref, xref_kind = self._locate_cross_reference(parser, logger, resources)
-        self._read_trailer(parser, logger, resources)
+        trailer_info = self._read_trailer(parser, logger, resources)
+        self._load_document_catalog(parser, logger, resources, trailer_info)
         parse_start = perf_counter()
         parsed = parser.parse()
         timings.parse_ms = (perf_counter() - parse_start) * 1000.0
@@ -499,6 +500,61 @@ class ConversionPipeline:
 
         self._advance_logger(logger, detail)
         return trailer_info
+
+    def _load_document_catalog(
+        self,
+        parser: PDFParser,
+        logger: PipelineLogger,
+        resources: dict[str, Any],
+        trailer_info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Retrieve the PDF document catalog and pages tree metadata."""
+
+        try:
+            catalog_info = parser.read_document_catalog()
+        except Exception as exc:  # pragma: no cover - delegated to parser/lib
+            message = f"Unable to load PDF document catalog for '{parser.source}': {exc}"
+            raise RuntimeError(message) from exc
+
+        catalog = catalog_info.get("catalog")
+        if catalog is not None:
+            resources.setdefault("pdf_catalog", catalog)
+
+        catalog_ref = catalog_info.get("catalog_ref")
+        if catalog_ref is not None:
+            resources.setdefault("pdf_catalog_ref", catalog_ref)
+        elif trailer_info is not None:
+            root_ref = trailer_info.get("root_ref")
+            if root_ref is not None:
+                resources.setdefault("pdf_catalog_ref", root_ref)
+
+        pages_ref = catalog_info.get("pages_ref")
+        if pages_ref is not None:
+            resources.setdefault("pdf_pages_ref", pages_ref)
+
+        pages_tree = catalog_info.get("pages")
+        if pages_tree is not None:
+            resources.setdefault("pdf_pages_tree", pages_tree)
+
+        pages_count = catalog_info.get("pages_count")
+        if pages_count is not None:
+            resources.setdefault("pdf_pages_count", pages_count)
+
+        detail_parts: list[str] = []
+        if pages_ref is not None:
+            detail_parts.append(f"pages_ref={pages_ref[0]} {pages_ref[1]}")
+        if isinstance(pages_count, int):
+            detail_parts.append(f"pages_count={pages_count}")
+        if catalog_ref is not None:
+            detail_parts.append(f"catalog_ref={catalog_ref[0]} {catalog_ref[1]}")
+
+        if detail_parts:
+            detail = "Loaded PDF document catalog (" + ", ".join(detail_parts) + ")."
+        else:
+            detail = "Loaded PDF document catalog."
+
+        self._advance_logger(logger, detail)
+        return catalog_info
 
 
 # ---------------------------------------------------------------------- #

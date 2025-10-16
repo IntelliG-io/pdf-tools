@@ -190,6 +190,7 @@ class PDFParser:
             | None
         ) = None
         self._trailer_info: dict[str, Any] | None = None
+        self._catalog_info: dict[str, Any] | None = None
         if preload:
             self.load()
 
@@ -249,8 +250,8 @@ class PDFParser:
         metadata = {key: str(value) for key, value in metadata_raw.items()}
 
         trailer = trailer_info.get("entries_dereferenced") or {}
-        root_obj = reader.trailer.get(NameObject("/Root"))
-        root = self._to_python(root_obj, dereference=True)
+        catalog_info = self.read_document_catalog()
+        root = catalog_info.get("catalog", {})
 
         pages = self._build_pages(reader, raw_bytes, object_offsets)
 
@@ -466,6 +467,71 @@ class PDFParser:
 
         self._trailer_info = dict(trailer_info)
         return dict(trailer_info)
+
+    def read_document_catalog(self) -> dict[str, Any]:
+        """Load the PDF document catalog and related page tree metadata."""
+
+        if self._catalog_info is not None:
+            return dict(self._catalog_info)
+
+        trailer_info = self.read_trailer()
+        root_ref = trailer_info.get("root_ref")
+
+        reader = self.reader
+        catalog_obj: DictionaryObject | None = None
+
+        if isinstance(root_ref, tuple) and len(root_ref) == 2:
+            try:
+                catalog_candidate = IndirectObject(root_ref[0], root_ref[1], reader)
+                resolved = catalog_candidate.get_object()
+            except Exception:
+                resolved = None
+            if isinstance(resolved, DictionaryObject):
+                catalog_obj = resolved
+
+        if catalog_obj is None:
+            try:
+                catalog_candidate = reader.trailer.get(NameObject("/Root"))
+            except Exception:
+                catalog_candidate = None
+
+            resolved = self._resolve(catalog_candidate)
+            catalog_obj = resolved if isinstance(resolved, DictionaryObject) else None
+
+        if catalog_obj is None:
+            raise ValueError("Unable to locate document catalog from trailer")
+
+        pages_ref: tuple[int, int] | None = None
+        pages_obj: DictionaryObject | None = None
+        pages_entry = catalog_obj.get(NameObject("/Pages"))
+        if isinstance(pages_entry, IndirectObject):
+            pages_ref = (pages_entry.idnum, pages_entry.generation)
+            try:
+                resolved_pages = pages_entry.get_object()
+            except Exception:
+                resolved_pages = None
+            if isinstance(resolved_pages, DictionaryObject):
+                pages_obj = resolved_pages
+        elif isinstance(pages_entry, DictionaryObject):
+            pages_obj = pages_entry
+
+        catalog_info = {
+            "catalog": self._to_python(catalog_obj, dereference=True),
+            "catalog_ref": root_ref,
+        }
+
+        if pages_ref is not None:
+            catalog_info["pages_ref"] = pages_ref
+        if pages_obj is not None:
+            catalog_info["pages"] = self._to_python(pages_obj, dereference=True)
+
+        if pages_obj is not None:
+            count_obj = pages_obj.get(NameObject("/Count"))
+            if isinstance(count_obj, (int, float)):
+                catalog_info["pages_count"] = int(count_obj)
+
+        self._catalog_info = dict(catalog_info)
+        return dict(catalog_info)
 
     def _parse_cross_reference(
         self,

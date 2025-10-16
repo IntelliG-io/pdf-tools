@@ -215,6 +215,14 @@ def test_conversion_pipeline_records_cross_reference(tmp_path: Path) -> None:
     assert context.resources.get("pdf_trailer_dereferenced")
     if trailer_info.get("size") is not None:
         assert context.resources.get("pdf_object_count") == trailer_info.get("size")
+    catalog = context.resources.get("pdf_catalog")
+    assert catalog
+    assert catalog.get("/Type") == "/Catalog"
+    pages_tree = context.resources.get("pdf_pages_tree")
+    assert pages_tree
+    assert pages_tree.get("/Type") == "/Pages"
+    assert context.resources.get("pdf_pages_ref")
+    assert context.resources.get("pdf_pages_count") == 1
 
 
 def test_pdf_document_primitives_conversion(tmp_path: Path) -> None:
