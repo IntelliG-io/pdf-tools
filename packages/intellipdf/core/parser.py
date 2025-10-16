@@ -515,6 +515,16 @@ class PDFParser:
         elif isinstance(pages_entry, DictionaryObject):
             pages_obj = pages_entry
 
+        if pages_obj is None:
+            raise ValueError("Document catalog is missing a /Pages dictionary")
+
+        pages_type_obj = self._resolve(pages_obj.get(NameObject("/Type")))
+        pages_type = str(pages_type_obj) if pages_type_obj is not None else None
+        if pages_type and pages_type != "/Pages":
+            raise ValueError(
+                "Document catalog /Pages entry does not reference a /Pages node"
+            )
+
         catalog_info = {
             "catalog": self._to_python(catalog_obj, dereference=True),
             "catalog_ref": root_ref,
@@ -522,16 +532,109 @@ class PDFParser:
 
         if pages_ref is not None:
             catalog_info["pages_ref"] = pages_ref
-        if pages_obj is not None:
-            catalog_info["pages"] = self._to_python(pages_obj, dereference=True)
+        catalog_info["pages"] = self._to_python(pages_obj, dereference=True)
 
-        if pages_obj is not None:
-            count_obj = pages_obj.get(NameObject("/Count"))
-            if isinstance(count_obj, (int, float)):
-                catalog_info["pages_count"] = int(count_obj)
+        count_obj = self._resolve(pages_obj.get(NameObject("/Count")))
+        if isinstance(count_obj, (int, float)):
+            catalog_info["pages_count"] = int(count_obj)
+
+        catalog_info["pages_tree_summary"] = self._summarize_pages_node(
+            pages_obj,
+            ref=pages_ref,
+        )
 
         self._catalog_info = dict(catalog_info)
         return dict(catalog_info)
+
+    def _summarize_pages_node(
+        self,
+        node: DictionaryObject,
+        *,
+        ref: tuple[int, int] | None,
+        _seen_refs: set[tuple[int, int]] | None = None,
+        _seen_nodes: set[int] | None = None,
+    ) -> dict[str, Any]:
+        """Return a lightweight summary for a /Pages tree node."""
+
+        if _seen_refs is None:
+            _seen_refs = set()
+        if _seen_nodes is None:
+            _seen_nodes = set()
+
+        node_id = id(node)
+        if node_id in _seen_nodes:
+            summary: dict[str, Any] = {"type": "/Pages", "cycle": True}
+            if ref is not None:
+                summary["ref"] = ref
+            return summary
+        _seen_nodes.add(node_id)
+
+        type_obj = self._resolve(node.get(NameObject("/Type")))
+        type_name = str(type_obj) if type_obj is not None else None
+
+        summary = {"type": type_name or "/Pages"}
+        if ref is not None:
+            summary["ref"] = ref
+
+        count_obj = self._resolve(node.get(NameObject("/Count")))
+        if isinstance(count_obj, (int, float)):
+            summary["count"] = int(count_obj)
+
+        kids_obj = node.get(NameObject("/Kids"))
+        kids_resolved = self._resolve(kids_obj)
+        if isinstance(kids_resolved, ArrayObject):
+            children: list[dict[str, Any]] = []
+            for child in kids_resolved:
+                child_ref: tuple[int, int] | None = None
+                if isinstance(child, IndirectObject):
+                    child_ref = (child.idnum, child.generation)
+                    if child_ref in _seen_refs:
+                        children.append({"type": "circular", "ref": child_ref})
+                        continue
+                    _seen_refs.add(child_ref)
+                child_resolved = self._resolve(child)
+                if isinstance(child_resolved, DictionaryObject):
+                    child_type_obj = self._resolve(
+                        child_resolved.get(NameObject("/Type"))
+                    )
+                    child_type = str(child_type_obj) if child_type_obj is not None else None
+                    if child_type == "/Pages":
+                        children.append(
+                            self._summarize_pages_node(
+                                child_resolved,
+                                ref=child_ref,
+                                _seen_refs=_seen_refs,
+                                _seen_nodes=_seen_nodes,
+                            )
+                        )
+                    else:
+                        entry: dict[str, Any] = {"type": child_type or "Unknown"}
+                        if child_ref is not None:
+                            entry["ref"] = child_ref
+                        if child_type == "/Page":
+                            media_box = self._resolve_array(child_resolved.get(NameObject("/MediaBox")))
+                            if media_box is not None:
+                                entry["media_box"] = media_box
+                        children.append(entry)
+                else:
+                    entry = {"type": "Unknown"}
+                    if child_ref is not None:
+                        entry["ref"] = child_ref
+                    children.append(entry)
+            if children:
+                summary["kids"] = children
+                summary["kids_count"] = len(children)
+
+        return summary
+
+    def _resolve_array(self, obj: Any) -> list[float] | None:
+        resolved = self._resolve(obj)
+        if isinstance(resolved, ArrayObject):
+            try:
+                return [float(item) for item in resolved]
+            except Exception:
+                return None
+        return None
 
     def _parse_cross_reference(
         self,

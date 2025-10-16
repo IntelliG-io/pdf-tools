@@ -66,6 +66,13 @@ def test_pdf_parser_builds_parsed_document(tmp_path):
     assert catalog_info.get("pages_ref")
     assert catalog_info.get("pages")["/Type"] == "/Pages"
     assert catalog_info.get("pages_count") == 1
+    pages_summary = catalog_info.get("pages_tree_summary")
+    assert pages_summary
+    assert pages_summary["type"] == "/Pages"
+    assert pages_summary.get("count") == 1
+    assert pages_summary.get("kids_count") == 1
+    assert pages_summary.get("kids")
+    assert pages_summary["kids"][0]["type"] == "/Page"
 
     resolved = document.resolver.resolve(page.object_ref)
     assert resolved is not None

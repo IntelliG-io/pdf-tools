@@ -532,9 +532,16 @@ class ConversionPipeline:
         if pages_ref is not None:
             resources.setdefault("pdf_pages_ref", pages_ref)
 
+        pages_summary: dict[str, Any] | None = None
+
         pages_tree = catalog_info.get("pages")
         if pages_tree is not None:
             resources.setdefault("pdf_pages_tree", pages_tree)
+
+        summary_candidate = catalog_info.get("pages_tree_summary")
+        if isinstance(summary_candidate, dict):
+            pages_summary = summary_candidate
+            resources.setdefault("pdf_pages_tree_summary", pages_summary)
 
         pages_count = catalog_info.get("pages_count")
         if pages_count is not None:
@@ -547,6 +554,10 @@ class ConversionPipeline:
             detail_parts.append(f"pages_count={pages_count}")
         if catalog_ref is not None:
             detail_parts.append(f"catalog_ref={catalog_ref[0]} {catalog_ref[1]}")
+        if isinstance(pages_summary, dict):
+            kids_count = pages_summary.get("kids_count")
+            if isinstance(kids_count, int):
+                detail_parts.append(f"pages_kids={kids_count}")
 
         if detail_parts:
             detail = "Loaded PDF document catalog (" + ", ".join(detail_parts) + ")."

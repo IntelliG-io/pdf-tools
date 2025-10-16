@@ -221,6 +221,11 @@ def test_conversion_pipeline_records_cross_reference(tmp_path: Path) -> None:
     pages_tree = context.resources.get("pdf_pages_tree")
     assert pages_tree
     assert pages_tree.get("/Type") == "/Pages"
+    pages_summary = context.resources.get("pdf_pages_tree_summary")
+    assert pages_summary
+    assert pages_summary["type"] == "/Pages"
+    assert pages_summary.get("count") == 1
+    assert pages_summary.get("kids")
     assert context.resources.get("pdf_pages_ref")
     assert context.resources.get("pdf_pages_count") == 1
 
