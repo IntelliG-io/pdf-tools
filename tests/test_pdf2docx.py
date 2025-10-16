@@ -383,12 +383,39 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert lengths and lengths[0] == len(streams[0])
     assert stream_summary.get("has_content")
 
+    command_plan = context.resources.get("page_content_command_plan")
+    assert command_plan == [0]
+
+    command_lookup = context.resources.get("page_content_commands")
+    assert isinstance(command_lookup, dict)
+    assert 0 in command_lookup
+    command_entries = command_lookup[0]
+    assert isinstance(command_entries, list) and command_entries
+    assert command_entries[0].get("operator") == "BT"
+    assert command_entries[-1].get("operator") == "ET"
+    assert any(entry.get("category") == "text_show" for entry in command_entries)
+
+    command_summaries = context.resources.get("page_content_command_summaries")
+    assert isinstance(command_summaries, list) and len(command_summaries) == 1
+    command_summary_entry = command_summaries[0]
+    assert command_summary_entry.get("page_number") == 0
+    assert command_summary_entry.get("command_count") == len(command_entries)
+    assert command_summary_entry.get("text_show_commands", 0) >= 1
+    assert command_summary_entry.get("recognised") == command_summary_entry.get("command_count") - command_summary_entry.get("unknown_commands", 0)
+
     assert buffer_entry.get("content_stream_count") == len(streams)
     assert buffer_entry.get("content_length") == len(combined_bytes)
     buffer_lengths = buffer_entry.get("content_stream_lengths")
     assert isinstance(buffer_lengths, list)
     assert buffer_lengths == lengths
     assert buffer_entry.get("has_content")
+
+    assert buffer_entry.get("content_command_count") == len(command_entries)
+    assert isinstance(buffer_entry.get("content_commands"), list)
+    assert buffer_entry.get("content_commands") == command_entries
+    buffer_command_summary = buffer_entry.get("content_command_summary")
+    assert isinstance(buffer_command_summary, dict)
+    assert buffer_command_summary.get("command_count") == len(command_entries)
 
     text_buffers = context.resources.get("page_text_buffers")
     assert isinstance(text_buffers, list)
@@ -433,6 +460,7 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert summary_entry.get("page_number") == 0
     assert summary_entry.get("glyphs") == buffer_entry.get("glyph_count")
     assert summary_entry.get("images") == buffer_entry.get("image_count")
+    assert summary_entry.get("commands") == len(command_entries)
 
     state_summaries = context.resources.get("page_content_states")
     assert isinstance(state_summaries, list) and len(state_summaries) == 1

@@ -29,6 +29,7 @@ from .tools.converter.pdf_to_docx.converter.fonts import (
     collect_font_dictionaries,
     font_translation_maps,
 )
+from .tools.converter.pdf_to_docx.converter.reader import summarise_content_stream_commands
 
 __all__ = ["ConversionPipeline", "convert_pdf_to_docx"]
 
@@ -133,6 +134,12 @@ class ConversionPipeline:
             resources=resources,
         )
         self._collect_page_content_streams(
+            parsed,
+            page_numbers,
+            logger=logger,
+            resources=resources,
+        )
+        self._iterate_content_stream_commands(
             parsed,
             page_numbers,
             logger=logger,
@@ -290,7 +297,33 @@ class ConversionPipeline:
                     buffer_lookup[page_number] = buffer
         text_buffers: list[dict[str, Any]] | None = None
         text_buffer_lookup: dict[int, dict[str, Any]] | None = None
+        command_lookup: dict[int, list[dict[str, Any]]] | None = None
+        command_summary_lookup: dict[int, dict[str, Any]] | None = None
         if isinstance(resources, dict):
+            raw_commands = resources.get("page_content_commands")
+            if isinstance(raw_commands, Mapping):
+                command_lookup = {}
+                for key, value in raw_commands.items():
+                    try:
+                        page_number = int(key)
+                    except Exception:
+                        continue
+                    if not isinstance(value, list):
+                        continue
+                    normalised: list[dict[str, Any]] = []
+                    for entry in value:
+                        if isinstance(entry, dict):
+                            normalised.append(dict(entry))
+                    command_lookup[page_number] = normalised
+            raw_command_summaries = resources.get("page_content_command_summaries")
+            if isinstance(raw_command_summaries, list):
+                command_summary_lookup = {}
+                for entry in raw_command_summaries:
+                    if not isinstance(entry, dict):
+                        continue
+                    page_number = entry.get("page_number")
+                    if isinstance(page_number, int):
+                        command_summary_lookup[page_number] = dict(entry)
             raw_text_buffers = resources.get("page_text_buffers")
             if isinstance(raw_text_buffers, list):
                 text_buffers = [entry for entry in raw_text_buffers if isinstance(entry, dict)]
@@ -338,6 +371,19 @@ class ConversionPipeline:
             target_buffer["path_count"] = len(content.paths)
             if snapshot is not None:
                 target_buffer["content_stream_state"] = snapshot
+            if command_lookup is not None:
+                commands = command_lookup.get(index)
+                if commands is None:
+                    commands = command_lookup.get(content.page_number)
+                if commands is not None:
+                    target_buffer["content_commands"] = list(commands)
+                    target_buffer["content_command_count"] = len(commands)
+            if command_summary_lookup is not None:
+                command_summary = command_summary_lookup.get(index)
+                if command_summary is None:
+                    command_summary = command_summary_lookup.get(content.page_number)
+                if command_summary is not None:
+                    target_buffer["content_command_summary"] = dict(command_summary)
             if text_buffer_lookup is not None:
                 text_buffer = text_buffer_lookup.get(index)
             else:
@@ -359,17 +405,40 @@ class ConversionPipeline:
                     text_buffer["fonts_used"] = fonts_used
                 text_buffer["has_glyphs"] = bool(glyph_text)
         if resources is not None and buffers is not None:
-            resources["page_content_summary"] = [
-                {
-                    "page_number": buffer.get("page_number"),
-                    "glyphs": buffer.get("glyph_count", len(buffer.get("glyphs", ()))),
-                    "images": buffer.get("image_count", len(buffer.get("images", ()))),
-                    "lines": buffer.get("line_count", len(buffer.get("lines", ()))),
-                    "paths": buffer.get("path_count", len(buffer.get("paths", ()))),
-                }
-                for buffer in buffers
-                if isinstance(buffer, dict)
-            ]
+            summaries: list[dict[str, Any]] = []
+            for buffer in buffers:
+                if not isinstance(buffer, dict):
+                    continue
+                page_number = buffer.get("page_number")
+                glyphs = buffer.get("glyph_count", len(buffer.get("glyphs", ())))
+                images = buffer.get("image_count", len(buffer.get("images", ())))
+                lines = buffer.get("line_count", len(buffer.get("lines", ())))
+                paths = buffer.get("path_count", len(buffer.get("paths", ())))
+                command_count: int | None = None
+                if isinstance(page_number, int) and command_summary_lookup is not None:
+                    summary_entry = command_summary_lookup.get(page_number)
+                    if isinstance(summary_entry, dict):
+                        raw_count = summary_entry.get("command_count")
+                        if isinstance(raw_count, (int, float)):
+                            command_count = int(raw_count)
+                if command_count is None:
+                    if isinstance(buffer.get("content_commands"), list):
+                        command_count = len(buffer.get("content_commands", ()))
+                    else:
+                        raw = buffer.get("content_command_count")
+                        if isinstance(raw, (int, float)):
+                            command_count = int(raw)
+                summaries.append(
+                    {
+                        "page_number": page_number,
+                        "glyphs": glyphs,
+                        "images": images,
+                        "lines": lines,
+                        "paths": paths,
+                        "commands": command_count if command_count is not None else 0,
+                    }
+                )
+            resources["page_content_summary"] = summaries
         if resources is not None and state_summaries:
             resources["page_content_states"] = list(state_summaries.values())
         if resources is not None and isinstance(text_buffers, list):
@@ -548,6 +617,9 @@ class ConversionPipeline:
                 "content_stream_lengths": stream_lengths,
                 "content_length": content_length,
                 "has_content": has_content,
+                "content_commands": [],
+                "content_command_count": 0,
+                "content_command_summary": None,
             }
             buffers.append(buffer)
         resources["page_content_plan"] = plan
@@ -860,6 +932,110 @@ class ConversionPipeline:
             )
         else:
             detail = "No page content streams found for selected pages."
+
+        self._advance_logger(logger, detail)
+
+    def _iterate_content_stream_commands(
+        self,
+        parsed: ParsedDocument,
+        page_numbers: Sequence[int],
+        *,
+        logger: PipelineLogger,
+        resources: dict[str, Any],
+    ) -> None:
+        """Iterate each page's content commands prior to interpretation."""
+
+        plan = list(page_numbers)
+        resources["page_content_command_plan"] = plan
+
+        pages = parsed.pages
+        reader = parsed.resolver.reader
+        command_lookup: dict[int, list[dict[str, Any]]] = {}
+        summaries: list[dict[str, Any]] = []
+        preview: list[str] = []
+
+        dictionaries = resources.get("page_dictionaries")
+        page_dictionary_list: list[DictionaryObject | None] = []
+        if isinstance(dictionaries, list):
+            page_dictionary_list = [
+                entry if isinstance(entry, DictionaryObject) else None for entry in dictionaries
+            ]
+
+        for ordinal, index in enumerate(plan):
+            if index < 0 or index >= len(pages):
+                raise ValueError(
+                    f"Page index {index} out of bounds for document with {len(pages)} pages",
+                )
+
+            parsed_page = pages[index]
+            page_dict: DictionaryObject | None = None
+            if ordinal < len(page_dictionary_list):
+                page_dict = page_dictionary_list[ordinal]
+            if not isinstance(page_dict, DictionaryObject):
+                try:
+                    candidate = reader.pages[parsed_page.number]  # type: ignore[index]
+                except Exception:  # pragma: no cover - defensive fallback
+                    candidate = None
+                if isinstance(candidate, DictionaryObject):
+                    page_dict = candidate
+
+            if not isinstance(page_dict, DictionaryObject):
+                commands: list[dict[str, Any]] = []
+                summary: dict[str, Any] = {
+                    "command_count": 0,
+                    "recognised": 0,
+                    "unknown_commands": 0,
+                    "text_control_commands": 0,
+                    "text_state_commands": 0,
+                    "text_position_commands": 0,
+                    "text_show_commands": 0,
+                    "graphics_state_commands": 0,
+                    "color_commands": 0,
+                    "path_construction_commands": 0,
+                    "path_painting_commands": 0,
+                    "clipping_commands": 0,
+                    "inline_image_commands": 0,
+                    "xobject_commands": 0,
+                    "marked_content_commands": 0,
+                    "shading_commands": 0,
+                    "operators": [],
+                }
+            else:
+                commands, summary = summarise_content_stream_commands(page_dict, reader)
+
+            summary = dict(summary)
+            summary["page_number"] = parsed_page.number
+            summary["ordinal"] = ordinal
+
+            command_lookup[parsed_page.number] = [
+                dict(entry) if isinstance(entry, dict) else {"operator": entry}
+                for entry in commands
+            ]
+            summaries.append(summary)
+
+            if summary["command_count"]:
+                preview.append(
+                    "p"
+                    f"{parsed_page.number + 1}="
+                    f"ops:{summary['command_count']},text:{summary.get('text_show_commands', 0)}"
+                )
+
+        resources["page_content_commands"] = command_lookup
+        resources["page_content_command_summaries"] = summaries
+
+        if preview:
+            if len(preview) > 3:
+                detail_preview = preview[:3] + ["…"]
+            else:
+                detail_preview = preview
+            detail = (
+                "Iterated content stream commands for "
+                f"{len(summaries)} page(s) ({', '.join(detail_preview)})."
+            )
+        elif summaries:
+            detail = f"Iterated content stream commands for {len(summaries)} page(s) with no operators."
+        else:
+            detail = "No page content commands found for selected pages."
 
         self._advance_logger(logger, detail)
 

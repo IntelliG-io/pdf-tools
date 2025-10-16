@@ -39,6 +39,7 @@ __all__ = [
     "extract_vector_graphics",
     "extract_struct_roles",
     "page_from_reader",
+    "summarise_content_stream_commands",
     "_is_vertical_matrix",
 ]
 
@@ -164,6 +165,159 @@ class ContentStreamState:
         if page_number is not None:
             data["page_number"] = page_number
         return data
+
+
+_TEXT_CONTROL_OPS = {b"BT", b"ET"}
+_TEXT_STATE_OPS = {b"Tc", b"Tw", b"TL", b"Tz", b"Tr", b"Ts", b"d0", b"d1"}
+_TEXT_POSITION_OPS = {b"Td", b"TD", b"Tm", b"T*"}
+_TEXT_SHOW_OPS = {b"Tj", b"TJ", b"'", b'"'}
+_GRAPHICS_STATE_OPS = {b"q", b"Q", b"cm", b"gs", b"w", b"J", b"j", b"M", b"d", b"ri", b"i"}
+_COLOR_OPS = {
+    b"RG",
+    b"rg",
+    b"G",
+    b"g",
+    b"K",
+    b"k",
+    b"CS",
+    b"cs",
+    b"SC",
+    b"sc",
+    b"SCN",
+    b"scn",
+}
+_PATH_CONSTRUCTION_OPS = {b"m", b"l", b"c", b"v", b"y", b"h", b"re"}
+_PATH_PAINTING_OPS = {b"S", b"s", b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*", b"n"}
+_CLIPPING_OPS = {b"W", b"W*"}
+_XOBJECT_OPS = {b"Do"}
+_INLINE_IMAGE_OPS = {b"BI", b"ID", b"EI"}
+_MARKED_CONTENT_OPS = {b"BMC", b"BDC", b"EMC", b"MP", b"DP", b"BX", b"EX"}
+_SHADING_OPS = {b"sh"}
+
+
+def _decode_operator(operator: object) -> bytes:
+    if isinstance(operator, bytes):
+        return operator
+    if isinstance(operator, str):
+        return operator.encode("latin-1", "ignore")
+    return str(operator).encode("latin-1", "ignore")
+
+
+def _classify_operator(operator: bytes) -> str:
+    if operator in _TEXT_CONTROL_OPS:
+        return "text_control"
+    if operator in _TEXT_STATE_OPS:
+        return "text_state"
+    if operator in _TEXT_POSITION_OPS:
+        return "text_position"
+    if operator in _TEXT_SHOW_OPS:
+        return "text_show"
+    if operator in _GRAPHICS_STATE_OPS:
+        return "graphics_state"
+    if operator in _COLOR_OPS:
+        return "color"
+    if operator in _PATH_CONSTRUCTION_OPS:
+        return "path_construction"
+    if operator in _PATH_PAINTING_OPS:
+        return "path_painting"
+    if operator in _CLIPPING_OPS:
+        return "clipping"
+    if operator in _XOBJECT_OPS:
+        return "xobject"
+    if operator in _INLINE_IMAGE_OPS:
+        return "inline_image"
+    if operator in _MARKED_CONTENT_OPS:
+        return "marked_content"
+    if operator in _SHADING_OPS:
+        return "shading"
+    return "unknown"
+
+
+def summarise_content_stream_commands(
+    page: DictionaryObject,
+    reader: PdfReader,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Parse a content stream and classify each operator encountered."""
+
+    try:
+        content = ContentStream(page.get_contents(), reader)
+    except Exception:
+        return [], {
+            "command_count": 0,
+            "recognised": 0,
+            "unknown_commands": 0,
+            "text_control_commands": 0,
+            "text_state_commands": 0,
+            "text_position_commands": 0,
+            "text_show_commands": 0,
+            "graphics_state_commands": 0,
+            "color_commands": 0,
+            "path_construction_commands": 0,
+            "path_painting_commands": 0,
+            "clipping_commands": 0,
+            "inline_image_commands": 0,
+            "xobject_commands": 0,
+            "marked_content_commands": 0,
+            "shading_commands": 0,
+            "operators": [],
+        }
+
+    operations = getattr(content, "operations", [])
+    commands: list[dict[str, Any]] = []
+    counts = {
+        "text_control": 0,
+        "text_state": 0,
+        "text_position": 0,
+        "text_show": 0,
+        "graphics_state": 0,
+        "color": 0,
+        "path_construction": 0,
+        "path_painting": 0,
+        "clipping": 0,
+        "inline_image": 0,
+        "xobject": 0,
+        "marked_content": 0,
+        "shading": 0,
+        "unknown": 0,
+    }
+    operators_seen: set[str] = set()
+
+    for operands, operator in operations:
+        op_bytes = _decode_operator(operator)
+        category = _classify_operator(op_bytes)
+        operand_count = len(operands) if isinstance(operands, (list, tuple)) else 0
+        operators_seen.add(op_bytes.decode("latin-1", "ignore"))
+        counts[category] = counts.get(category, 0) + 1
+        commands.append(
+            {
+                "operator": op_bytes.decode("latin-1", "ignore"),
+                "category": category,
+                "operand_count": operand_count,
+                "recognised": category != "unknown",
+            }
+        )
+
+    summary = {
+        "command_count": len(commands),
+        "recognised": len(commands) - counts.get("unknown", 0),
+        "unknown_commands": counts.get("unknown", 0),
+        "text_control_commands": counts.get("text_control", 0),
+        "text_state_commands": counts.get("text_state", 0),
+        "text_position_commands": counts.get("text_position", 0),
+        "text_show_commands": counts.get("text_show", 0),
+        "graphics_state_commands": counts.get("graphics_state", 0),
+        "color_commands": counts.get("color", 0),
+        "path_construction_commands": counts.get("path_construction", 0),
+        "path_painting_commands": counts.get("path_painting", 0),
+        "clipping_commands": counts.get("clipping", 0),
+        "inline_image_commands": counts.get("inline_image", 0),
+        "xobject_commands": counts.get("xobject", 0),
+        "marked_content_commands": counts.get("marked_content", 0),
+        "shading_commands": counts.get("shading", 0),
+        "operators": sorted(operators_seen),
+    }
+
+    return commands, summary
 
 
 @dataclass(slots=True)
