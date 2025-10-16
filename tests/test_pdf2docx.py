@@ -317,6 +317,9 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     plan = context.resources.get("page_content_plan")
     assert plan == [0]
 
+    text_plan = context.resources.get("page_text_plan")
+    assert text_plan == [0]
+
     parser_plan = context.resources.get("content_stream_parser_plan")
     assert isinstance(parser_plan, list)
     assert len(parser_plan) == 1
@@ -386,6 +389,43 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert isinstance(buffer_lengths, list)
     assert buffer_lengths == lengths
     assert buffer_entry.get("has_content")
+
+    text_buffers = context.resources.get("page_text_buffers")
+    assert isinstance(text_buffers, list)
+    assert len(text_buffers) == 1
+    text_entry = text_buffers[0]
+    assert text_entry.get("page_number") == 0
+    assert text_entry.get("ordinal") == 0
+    assert isinstance(text_entry.get("glyphs"), list)
+    assert text_entry.get("glyph_count") == len(text_entry.get("glyphs", ()))
+    assert any("Buffer" in glyph for glyph in text_entry.get("glyphs", []))
+    fonts_meta = text_entry.get("fonts")
+    assert isinstance(fonts_meta, list)
+    assert text_entry.get("font_count") == len(fonts_meta)
+    font_maps = text_entry.get("font_maps")
+    assert isinstance(font_maps, dict)
+    font_map_entry = font_maps.get("/F1") or font_maps.get("F1")
+    assert isinstance(font_map_entry, dict)
+    assert "has_translation" in font_map_entry
+
+    font_summaries = context.resources.get("page_font_summaries")
+    assert isinstance(font_summaries, list)
+    assert len(font_summaries) == 1
+    font_summary = font_summaries[0]
+    assert font_summary.get("page_number") == 0
+    assert font_summary.get("font_count") >= 1
+
+    translation_maps = context.resources.get("page_font_translation_maps")
+    assert isinstance(translation_maps, dict)
+    assert 0 in translation_maps
+    assert isinstance(translation_maps[0], dict)
+
+    text_summary = context.resources.get("page_text_summary")
+    assert isinstance(text_summary, list)
+    assert len(text_summary) == 1
+    text_summary_entry = text_summary[0]
+    assert text_summary_entry.get("page_number") == 0
+    assert text_summary_entry.get("glyphs") == text_entry.get("glyph_count")
 
     summary = context.resources.get("page_content_summary")
     assert isinstance(summary, list) and len(summary) == 1

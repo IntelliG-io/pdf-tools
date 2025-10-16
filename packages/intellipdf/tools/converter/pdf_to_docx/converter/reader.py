@@ -628,9 +628,32 @@ def capture_text_fragments(
     page: DictionaryObject,
     reader: PdfReader,
     state: ContentStreamState | None = None,
+    font_maps: Mapping[int, tuple[dict[str, str], int]] | None = None,
 ) -> list[CapturedText]:
     fragments: list[CapturedText] = []
-    font_maps = font_translation_maps(page)
+    if isinstance(font_maps, Mapping):
+        translation_maps: dict[int, tuple[dict[str, str], int]] = {}
+        for key, value in font_maps.items():
+            try:
+                dict_id = int(key)
+            except Exception:
+                continue
+            if (
+                isinstance(value, tuple)
+                and len(value) == 2
+                and isinstance(value[0], Mapping)
+            ):
+                mapping = dict(value[0])
+                max_key_length_raw = value[1]
+                if isinstance(max_key_length_raw, (int, float)):
+                    max_key_length = int(max_key_length_raw)
+                else:
+                    max_key_length = 1
+                translation_maps[dict_id] = (mapping, max(1, max_key_length))
+        if not translation_maps:
+            translation_maps = font_translation_maps(page)
+    else:
+        translation_maps = font_translation_maps(page)
     try:
         content = ContentStream(page.get_contents(), reader)
     except Exception:
@@ -700,7 +723,7 @@ def capture_text_fragments(
                 base_font = str(base_font_obj)
                 if base_font.startswith("/"):
                     base_font = base_font[1:]
-            mapping_entry = font_maps.get(id(font_obj))
+            mapping_entry = translation_maps.get(id(font_obj))
             if mapping_entry is not None:
                 mapping, max_key_length = mapping_entry
                 raw = apply_translation_map(raw, mapping, max_key_length)

@@ -99,10 +99,17 @@ class PageContent:
 class PDFContentInterpreter:
     """Decode PDF content streams into structured primitives."""
 
-    def __init__(self, document: ParsedDocument) -> None:
+    def __init__(
+        self,
+        document: ParsedDocument,
+        *,
+        page_font_maps: Mapping[int, Mapping[int, tuple[dict[str, str], int]]] | None = None,
+    ) -> None:
         self.document = document
         self._reader = document.resolver.reader
         self._page_states: dict[int, ContentStreamState] = {}
+        self._page_font_maps: dict[int, dict[int, tuple[dict[str, str], int]]] = {}
+        self.update_page_font_maps(page_font_maps)
 
     def interpret_page(self, page: ParsedPage | int) -> PageContent:
         """Interpret a :class:`ParsedPage` (or page index) into primitives."""
@@ -122,7 +129,13 @@ class PDFContentInterpreter:
             return content
 
         state = self._initialise_page_state(parsed.number)
-        fragments = capture_text_fragments(page_obj, self._reader, state=state)
+        font_maps = self._page_font_maps.get(parsed.number)
+        fragments = capture_text_fragments(
+            page_obj,
+            self._reader,
+            state=state,
+            font_maps=font_maps,
+        )
         images = extract_page_images(page_obj, self._reader)
         lines, paths = extract_vector_graphics(page_obj, self._reader)
 
@@ -164,6 +177,37 @@ class PDFContentInterpreter:
         state = ContentStreamState()
         state.reset()
         return state
+
+    def update_page_font_maps(
+        self,
+        page_font_maps: Mapping[int, Mapping[int, tuple[dict[str, str], int]]] | None,
+    ) -> None:
+        if not isinstance(page_font_maps, Mapping):
+            return
+        for page_number, mapping in page_font_maps.items():
+            try:
+                page_index = int(page_number)
+            except Exception:
+                continue
+            if not isinstance(mapping, Mapping):
+                continue
+            normalised: dict[int, tuple[dict[str, str], int]] = {}
+            for dict_id, entry in mapping.items():
+                try:
+                    key = int(dict_id)
+                except Exception:
+                    continue
+                if (
+                    isinstance(entry, tuple)
+                    and len(entry) == 2
+                    and isinstance(entry[0], Mapping)
+                ):
+                    map_dict = dict(entry[0])
+                    raw_max = entry[1]
+                    max_len = int(raw_max) if isinstance(raw_max, (int, float)) else 1
+                    normalised[key] = (map_dict, max(1, max_len))
+            if normalised:
+                self._page_font_maps[page_index] = normalised
 
     def _page_dimensions(self, geometry) -> tuple[float, float]:
         left, bottom, right, top = geometry.media_box

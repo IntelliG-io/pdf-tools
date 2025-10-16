@@ -8,12 +8,14 @@ import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Iterable, Literal, Sequence
+from typing import Any, Iterable, Literal, Mapping, Sequence
 from zipfile import ZipFile, BadZipFile
 
 from .core.parser import PDFParser, ParsedDocument
 from .exporters.docx.generator import DocxGenerator
 from .tools.common.interfaces import ConversionContext
+from pypdf.generic import DictionaryObject, IndirectObject, NameObject
+
 from .tools.converter.pdf_to_docx.converter.types import (
     ConversionMetadata,
     ConversionOptions,
@@ -23,6 +25,10 @@ from .tools.converter.pdf_to_docx.converter.pipeline import PipelineLogger
 from .tools.converter.pdf_to_docx.interpreter import PDFContentInterpreter, PageContent
 from .tools.converter.pdf_to_docx.layout_analyzer import LayoutAnalyzer
 from .tools.converter.pdf_to_docx.converter.metadata import merge_metadata as _merge_metadata
+from .tools.converter.pdf_to_docx.converter.fonts import (
+    collect_font_dictionaries,
+    font_translation_maps,
+)
 
 __all__ = ["ConversionPipeline", "convert_pdf_to_docx"]
 
@@ -127,6 +133,12 @@ class ConversionPipeline:
             resources=resources,
         )
         self._collect_page_content_streams(
+            parsed,
+            page_numbers,
+            logger=logger,
+            resources=resources,
+        )
+        self._prepare_text_extraction(
             parsed,
             page_numbers,
             logger=logger,
@@ -276,6 +288,17 @@ class ConversionPipeline:
                 page_number = buffer.get("page_number") if isinstance(buffer, dict) else None
                 if isinstance(page_number, int):
                     buffer_lookup[page_number] = buffer
+        text_buffers: list[dict[str, Any]] | None = None
+        text_buffer_lookup: dict[int, dict[str, Any]] | None = None
+        if isinstance(resources, dict):
+            raw_text_buffers = resources.get("page_text_buffers")
+            if isinstance(raw_text_buffers, list):
+                text_buffers = [entry for entry in raw_text_buffers if isinstance(entry, dict)]
+                text_buffer_lookup = {}
+                for entry in text_buffers:
+                    page_number = entry.get("page_number")
+                    if isinstance(page_number, int):
+                        text_buffer_lookup[page_number] = entry
         state_summaries: dict[int, dict[str, Any]] = {}
         for position, index in enumerate(page_numbers):
             content = interpreter.interpret_page(index)
@@ -315,6 +338,26 @@ class ConversionPipeline:
             target_buffer["path_count"] = len(content.paths)
             if snapshot is not None:
                 target_buffer["content_stream_state"] = snapshot
+            if text_buffer_lookup is not None:
+                text_buffer = text_buffer_lookup.get(index)
+            else:
+                text_buffer = None
+            if text_buffer is None and isinstance(text_buffers, list) and position < len(text_buffers):
+                candidate = text_buffers[position]
+                if isinstance(candidate, dict):
+                    text_buffer = candidate
+                    if text_buffer_lookup is not None:
+                        text_buffer_lookup[index] = text_buffer
+            if isinstance(text_buffer, dict):
+                text_buffer["page_number"] = content.page_number
+                text_buffer["ordinal"] = position
+                glyph_text = [glyph.text for glyph in content.glyphs]
+                text_buffer["glyphs"] = glyph_text
+                text_buffer["glyph_count"] = len(glyph_text)
+                fonts_used = sorted({glyph.font_name for glyph in content.glyphs if glyph.font_name})
+                if fonts_used:
+                    text_buffer["fonts_used"] = fonts_used
+                text_buffer["has_glyphs"] = bool(glyph_text)
         if resources is not None and buffers is not None:
             resources["page_content_summary"] = [
                 {
@@ -329,6 +372,19 @@ class ConversionPipeline:
             ]
         if resources is not None and state_summaries:
             resources["page_content_states"] = list(state_summaries.values())
+        if resources is not None and isinstance(text_buffers, list):
+            resources["page_text_summary"] = [
+                {
+                    "page_number": entry.get("page_number"),
+                    "glyphs": entry.get("glyph_count", len(entry.get("glyphs", ()))),
+                    "font_count": entry.get("font_count", 0),
+                    "fonts_with_translation": sum(
+                        1 for font in entry.get("fonts", ()) if isinstance(font, dict) and font.get("has_translation")
+                    ),
+                }
+                for entry in text_buffers
+                if isinstance(entry, dict)
+            ]
         return contents
 
     def _initialise_content_stream_parser(
@@ -342,6 +398,33 @@ class ConversionPipeline:
         """Initialise the content interpreter with default graphics state."""
 
         interpreter = self._interpreter_factory(parsed)
+        font_maps_resource = resources.get("page_font_translation_maps")
+        page_font_maps: dict[int, dict[int, tuple[dict[str, str], int]]] = {}
+        if isinstance(font_maps_resource, Mapping):
+            for page_key, mapping in font_maps_resource.items():
+                try:
+                    page_number = int(page_key)
+                except Exception:
+                    continue
+                if not isinstance(mapping, Mapping):
+                    continue
+                normalised: dict[int, tuple[dict[str, str], int]] = {}
+                for dict_id, entry in mapping.items():
+                    try:
+                        resource_id = int(dict_id)
+                    except Exception:
+                        continue
+                    if (
+                        isinstance(entry, tuple)
+                        and len(entry) == 2
+                        and isinstance(entry[0], Mapping)
+                    ):
+                        translation_map = dict(entry[0])
+                        raw_max = entry[1]
+                        max_key_length = int(raw_max) if isinstance(raw_max, (int, float)) else 1
+                        normalised[resource_id] = (translation_map, max(1, max_key_length))
+                if normalised:
+                    page_font_maps[page_number] = normalised
         default_state_summary: dict[str, Any] | None = None
         if hasattr(interpreter, "default_state"):
             try:
@@ -393,6 +476,11 @@ class ConversionPipeline:
         else:
             detail = "No pages selected; content stream parser initialised with empty plan."
         self._advance_logger(logger, detail)
+        if page_font_maps and hasattr(interpreter, "update_page_font_maps"):
+            try:
+                interpreter.update_page_font_maps(page_font_maps)  # type: ignore[attr-defined]
+            except Exception:  # pragma: no cover - defensive fallback
+                pass
         return interpreter
 
     def _prepare_page_content_buffers(
@@ -773,6 +861,141 @@ class ConversionPipeline:
         else:
             detail = "No page content streams found for selected pages."
 
+        self._advance_logger(logger, detail)
+
+    def _prepare_text_extraction(
+        self,
+        parsed: ParsedDocument,
+        page_numbers: Sequence[int],
+        *,
+        logger: PipelineLogger,
+        resources: dict[str, Any],
+    ) -> None:
+        """Initialise per-page text buffers and preload font translation maps."""
+
+        plan = list(page_numbers)
+        resources["page_text_plan"] = plan
+
+        dictionaries = resources.get("page_dictionaries")
+        page_dictionary_list: list[DictionaryObject | None] = []
+        if isinstance(dictionaries, list):
+            page_dictionary_list = [
+                entry if isinstance(entry, DictionaryObject) else None for entry in dictionaries
+            ]
+
+        page_font_maps: dict[int, dict[int, tuple[dict[str, str], int]]] = {}
+        text_buffers: list[dict[str, Any]] = []
+        font_summaries: list[dict[str, Any]] = []
+        fonts_with_translation = 0
+        fonts_seen = 0
+
+        def _resolve(candidate: object | None) -> object | None:
+            if isinstance(candidate, IndirectObject):
+                try:
+                    return candidate.get_object()
+                except Exception:  # pragma: no cover - defensive fallback
+                    return None
+            return candidate
+
+        for ordinal, index in enumerate(plan):
+            page_dict: DictionaryObject | None = None
+            if ordinal < len(page_dictionary_list):
+                page_dict = page_dictionary_list[ordinal]
+            page_translation: dict[int, tuple[dict[str, str], int]] = {}
+            fonts_info: list[dict[str, Any]] = []
+            font_lookup: dict[str, dict[str, Any]] = {}
+
+            if isinstance(page_dict, DictionaryObject):
+                try:
+                    page_translation = font_translation_maps(page_dict)
+                except Exception:  # pragma: no cover - defensive fallback
+                    page_translation = {}
+
+                resources_obj = _resolve(page_dict.get(NameObject("/Resources")))
+                fonts_obj = None
+                if isinstance(resources_obj, DictionaryObject):
+                    fonts_obj = _resolve(resources_obj.get(NameObject("/Font")))
+                if isinstance(fonts_obj, DictionaryObject):
+                    for raw_name, font_candidate in fonts_obj.items():
+                        font_name = str(raw_name)
+                        fonts_seen += 1
+                        resolved_font = _resolve(font_candidate)
+                        base_font = None
+                        subtype = None
+                        descendant_dicts: list[DictionaryObject] = []
+                        if isinstance(resolved_font, DictionaryObject):
+                            base_raw = (
+                                resolved_font.get(NameObject("/BaseFont"))
+                                or resolved_font.get("/BaseFont")
+                            )
+                            if base_raw is not None:
+                                base_font = str(base_raw)
+                            subtype_raw = (
+                                resolved_font.get(NameObject("/Subtype"))
+                                or resolved_font.get("/Subtype")
+                            )
+                            if subtype_raw is not None:
+                                subtype = str(subtype_raw)
+                            try:
+                                descendant_dicts = collect_font_dictionaries(resolved_font)
+                            except Exception:  # pragma: no cover - defensive fallback
+                                descendant_dicts = [resolved_font]
+                        translation_entry: tuple[dict[str, str], int] | None = None
+                        for dictionary in descendant_dicts:
+                            entry = page_translation.get(id(dictionary))
+                            if entry is not None:
+                                translation_entry = entry
+                                break
+                        has_translation = translation_entry is not None
+                        map_size = len(translation_entry[0]) if has_translation else 0
+                        max_key_length = (
+                            int(translation_entry[1]) if has_translation else 1
+                        )
+                        if has_translation:
+                            fonts_with_translation += 1
+                        font_info = {
+                            "name": font_name,
+                            "base_font": base_font,
+                            "subtype": subtype,
+                            "has_translation": has_translation,
+                            "map_size": map_size,
+                            "max_key_length": max_key_length,
+                        }
+                        fonts_info.append(font_info)
+                        font_lookup[font_name] = font_info
+                page_font_maps[index] = page_translation
+            else:
+                page_font_maps[index] = {}
+
+            buffer_entry: dict[str, Any] = {
+                "page_number": index,
+                "ordinal": ordinal,
+                "glyphs": [],
+                "glyph_count": 0,
+                "fonts": fonts_info,
+                "font_count": len(fonts_info),
+                "font_maps": font_lookup,
+                "fonts_used": [],
+            }
+            text_buffers.append(buffer_entry)
+            font_summaries.append(
+                {
+                    "page_number": index,
+                    "font_count": len(fonts_info),
+                    "fonts_with_translation": sum(
+                        1 for entry in fonts_info if entry.get("has_translation")
+                    ),
+                }
+            )
+
+        resources["page_font_translation_maps"] = page_font_maps
+        resources["page_text_buffers"] = text_buffers
+        resources["page_font_summaries"] = font_summaries
+
+        detail = (
+            f"Initialised text buffers for {len(plan)} page(s); processed {fonts_seen} font resource(s) "
+            f"({fonts_with_translation} with translation maps)."
+        )
         self._advance_logger(logger, detail)
 
     def _initialise_environment(
