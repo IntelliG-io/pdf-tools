@@ -428,10 +428,30 @@ class ConversionPipeline:
             if isinstance(text_buffer, dict):
                 text_buffer["page_number"] = content.page_number
                 text_buffer["ordinal"] = position
-                glyph_text = [glyph.text for glyph in content.glyphs]
+                text_elements = [
+                    {
+                        "text": glyph.text,
+                        "x": glyph.x,
+                        "y": glyph.y,
+                        "font_name": glyph.font_name,
+                        "font_size": glyph.font_size,
+                        "color": glyph.color,
+                        "vertical": glyph.vertical,
+                    }
+                    for glyph in content.glyphs
+                ]
+                glyph_text = [element["text"] for element in text_elements]
+                text_buffer["text_elements"] = text_elements
+                text_buffer["text_element_count"] = len(text_elements)
                 text_buffer["glyphs"] = glyph_text
                 text_buffer["glyph_count"] = len(glyph_text)
-                fonts_used = sorted({glyph.font_name for glyph in content.glyphs if glyph.font_name})
+                fonts_used = sorted(
+                    {
+                        element["font_name"]
+                        for element in text_elements
+                        if element.get("font_name")
+                    }
+                )
                 if fonts_used:
                     text_buffer["fonts_used"] = fonts_used
                 text_buffer["has_glyphs"] = bool(glyph_text)
@@ -481,10 +501,22 @@ class ConversionPipeline:
                 {
                     "page_number": entry.get("page_number"),
                     "glyphs": entry.get("glyph_count", len(entry.get("glyphs", ()))),
+                    "text_elements": entry.get(
+                        "text_element_count", len(entry.get("text_elements", ()))
+                    ),
                     "font_count": entry.get("font_count", 0),
                     "fonts_with_translation": sum(
                         1 for font in entry.get("fonts", ()) if isinstance(font, dict) and font.get("has_translation")
                     ),
+                }
+                for entry in text_buffers
+                if isinstance(entry, dict)
+            ]
+            resources["page_text_elements"] = [
+                {
+                    "page_number": entry.get("page_number"),
+                    "ordinal": entry.get("ordinal"),
+                    "elements": entry.get("text_elements", []),
                 }
                 for entry in text_buffers
                 if isinstance(entry, dict)

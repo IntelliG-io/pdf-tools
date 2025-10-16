@@ -452,6 +452,18 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert isinstance(text_entry.get("glyphs"), list)
     assert text_entry.get("glyph_count") == len(text_entry.get("glyphs", ()))
     assert any("Buffer" in glyph for glyph in text_entry.get("glyphs", []))
+    text_elements = text_entry.get("text_elements")
+    assert isinstance(text_elements, list)
+    assert text_elements
+    assert text_entry.get("text_element_count") == len(text_elements)
+    element_sample = text_elements[0]
+    assert element_sample.get("text")
+    assert isinstance(element_sample.get("x"), float)
+    assert isinstance(element_sample.get("y"), float)
+    assert element_sample.get("font_name") in {"Helvetica", "/Helvetica", "F1", None}
+    assert element_sample.get("font_size") == pytest.approx(12.0)
+    assert element_sample.get("color")
+    assert element_sample.get("vertical") is False
     fonts_meta = text_entry.get("fonts")
     assert isinstance(fonts_meta, list)
     assert text_entry.get("font_count") == len(fonts_meta)
@@ -479,6 +491,15 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     text_summary_entry = text_summary[0]
     assert text_summary_entry.get("page_number") == 0
     assert text_summary_entry.get("glyphs") == text_entry.get("glyph_count")
+    assert text_summary_entry.get("text_elements") == text_entry.get("text_element_count")
+
+    element_resources = context.resources.get("page_text_elements")
+    assert isinstance(element_resources, list)
+    assert len(element_resources) == 1
+    element_entry = element_resources[0]
+    assert element_entry.get("page_number") == 0
+    assert element_entry.get("ordinal") == 0
+    assert element_entry.get("elements") == text_elements
 
     summary = context.resources.get("page_content_summary")
     assert isinstance(summary, list) and len(summary) == 1
