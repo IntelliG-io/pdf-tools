@@ -64,6 +64,7 @@ from intellipdf.tools.converter.pdf_to_docx.primitives import (
 from intellipdf.tools.converter.pdf_to_docx.converter.images import path_to_picture
 from intellipdf.tools.converter.pdf_to_docx.converter.layout import collect_page_placements
 from intellipdf.tools.converter.pdf_to_docx.docx import write_docx
+from intellipdf.tools.converter.pdf_to_docx.interpreter import PageImage
 
 
 def _png_bytes(width: int, height: int, color: tuple[int, int, int, int] = (255, 0, 0, 255)) -> bytes:
@@ -133,6 +134,50 @@ def _create_pdf(
 
     if password:
         writer.encrypt(password)
+
+    with path.open("wb") as fh:
+        writer.write(fh)
+
+
+def _create_pdf_with_image(
+    path: Path,
+    *,
+    matrix: tuple[float, float, float, float, float, float] = (200, 0, 0, 200, 50, 60),
+) -> None:
+    import zlib
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=300)
+
+    raw = bytes([255, 0, 0] * 4)
+    encoded = zlib.compress(raw)
+    image_stream = StreamObject()
+    image_stream.update(
+        {
+            NameObject("/Type"): NameObject("/XObject"),
+            NameObject("/Subtype"): NameObject("/Image"),
+            NameObject("/Width"): NumberObject(2),
+            NameObject("/Height"): NumberObject(2),
+            NameObject("/ColorSpace"): NameObject("/DeviceRGB"),
+            NameObject("/BitsPerComponent"): NumberObject(8),
+            NameObject("/Filter"): NameObject("/FlateDecode"),
+        }
+    )
+    image_stream._data = encoded
+    image_ref = writer._add_object(image_stream)
+
+    resources = DictionaryObject(
+        {NameObject("/XObject"): DictionaryObject({NameObject("/Im1"): image_ref})}
+    )
+    page[NameObject("/Resources")] = resources
+
+    cm = " ".join(
+        str(int(value)) if float(value).is_integer() else str(value) for value in matrix
+    )
+    content = StreamObject()
+    content._data = f"q {cm} cm /Im1 Do Q".encode("ascii")
+    content[NameObject("/Length")] = NumberObject(len(content._data))
+    page[NameObject("/Contents")] = writer._add_object(content)
 
     with path.open("wb") as fh:
         writer.write(fh)
@@ -316,6 +361,23 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
 
     plan = context.resources.get("page_content_plan")
     assert plan == [0]
+
+    image_plan = context.resources.get("page_image_plan")
+    assert image_plan == [0]
+
+    image_summaries = context.resources.get("page_image_summaries")
+    assert isinstance(image_summaries, list)
+    assert len(image_summaries) == 1
+    image_summary = image_summaries[0]
+    assert image_summary.get("page_number") == 0
+    assert image_summary.get("image_count") == len(image_summary.get("images", ()))
+    assert isinstance(image_summary.get("images"), list)
+
+    image_cache = context.resources.get("page_image_cache")
+    assert isinstance(image_cache, dict)
+    assert 0 in image_cache
+    cached_images = image_cache[0]
+    assert isinstance(cached_images, list)
 
     text_plan = context.resources.get("page_text_plan")
     assert text_plan == [0]
@@ -528,6 +590,62 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
 
     interpreter_state = buffer_entry.get("content_stream_state")
     assert interpreter_state == state_entry
+
+
+def test_conversion_pipeline_prepares_image_resources(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "image-buffers.pdf"
+    _create_pdf_with_image(pdf_path)
+
+    docx_path = tmp_path / "image-buffers.docx"
+    context = ConversionContext()
+    pipeline = ConversionPipeline()
+    pipeline.run(pdf_path, docx_path, context=context)
+
+    image_summaries = context.resources.get("page_image_summaries")
+    assert isinstance(image_summaries, list)
+    assert len(image_summaries) == 1
+    summary = image_summaries[0]
+    assert summary.get("image_count") == 1
+    placements = summary.get("images")
+    assert isinstance(placements, list) and len(placements) == 1
+    placement = placements[0]
+    assert placement.get("name") in {"Im1", "/Im1"}
+    bbox = placement.get("bbox")
+    assert bbox and pytest.approx(bbox[0]) == 50.0
+    assert pytest.approx(bbox[1]) == 60.0
+    assert pytest.approx(bbox[2]) == 250.0
+    assert pytest.approx(bbox[3]) == 260.0
+    assert placement.get("bytes") > 0
+
+    image_cache = context.resources.get("page_image_cache")
+    assert isinstance(image_cache, dict) and 0 in image_cache
+    cached_images = image_cache[0]
+    assert isinstance(cached_images, list) and len(cached_images) == 1
+    primitive_image = cached_images[0]
+    assert primitive_image.mime_type == "image/png"
+    assert pytest.approx(primitive_image.bbox.left) == 50.0
+    assert pytest.approx(primitive_image.bbox.bottom) == 60.0
+    assert pytest.approx(primitive_image.bbox.right) == 250.0
+    assert pytest.approx(primitive_image.bbox.top) == 260.0
+
+    buffers = context.resources.get("page_content_buffers")
+    assert isinstance(buffers, list) and buffers
+    buffer_entry = buffers[0]
+    assert buffer_entry.get("image_count") == 1
+    extracted_images = buffer_entry.get("images")
+    assert isinstance(extracted_images, list) and len(extracted_images) == 1
+    page_image = extracted_images[0]
+    assert isinstance(page_image, PageImage)
+    assert pytest.approx(page_image.bbox.left) == 50.0
+    assert pytest.approx(page_image.bbox.bottom) == 60.0
+    assert pytest.approx(page_image.bbox.right) == 250.0
+    assert pytest.approx(page_image.bbox.top) == 260.0
+    assert page_image.mime_type == "image/png"
+
+    content_summary = context.resources.get("page_content_summary")
+    assert isinstance(content_summary, list) and len(content_summary) == 1
+    summary_entry = content_summary[0]
+    assert summary_entry.get("images") == 1
 
 
 def test_text_extraction_handles_spacing_and_newlines(tmp_path: Path) -> None:
@@ -1227,39 +1345,8 @@ def test_image_relationship_written(tmp_path: Path) -> None:
 
 
 def test_pdf_reader_flate_image_extraction(tmp_path: Path) -> None:
-    import zlib
-
-    writer = PdfWriter()
-    page = writer.add_blank_page(width=300, height=300)
-
-    raw = bytes([255, 0, 0] * 4)
-    encoded = zlib.compress(raw)
-    image_stream = StreamObject()
-    image_stream.update(
-        {
-            NameObject("/Type"): NameObject("/XObject"),
-            NameObject("/Subtype"): NameObject("/Image"),
-            NameObject("/Width"): NumberObject(2),
-            NameObject("/Height"): NumberObject(2),
-            NameObject("/ColorSpace"): NameObject("/DeviceRGB"),
-            NameObject("/BitsPerComponent"): NumberObject(8),
-            NameObject("/Filter"): NameObject("/FlateDecode"),
-        }
-    )
-    image_stream._data = encoded
-    image_ref = writer._add_object(image_stream)
-
-    resources = DictionaryObject({NameObject("/XObject"): DictionaryObject({NameObject("/Im1"): image_ref})})
-    page[NameObject("/Resources")] = resources
-
-    content = StreamObject()
-    content._data = b"q 200 0 0 200 50 60 cm /Im1 Do Q"
-    content[NameObject("/Length")] = NumberObject(len(content._data))
-    page[NameObject("/Contents")] = writer._add_object(content)
-
     pdf_path = tmp_path / "with-image.pdf"
-    with pdf_path.open("wb") as fh:
-        writer.write(fh)
+    _create_pdf_with_image(pdf_path)
 
     docx_path = tmp_path / "with-image.docx"
     convert_document(pdf_path, docx_path)

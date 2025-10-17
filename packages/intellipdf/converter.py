@@ -29,6 +29,7 @@ from .tools.converter.pdf_to_docx.converter.fonts import (
     collect_font_dictionaries,
     font_translation_maps,
 )
+from .tools.converter.pdf_to_docx.converter.images import extract_page_images
 from .tools.converter.pdf_to_docx.converter.reader import summarise_content_stream_commands
 
 __all__ = ["ConversionPipeline", "convert_pdf_to_docx"]
@@ -140,6 +141,12 @@ class ConversionPipeline:
             resources=resources,
         )
         self._iterate_content_stream_commands(
+            parsed,
+            page_numbers,
+            logger=logger,
+            resources=resources,
+        )
+        self._prepare_image_extraction(
             parsed,
             page_numbers,
             logger=logger,
@@ -652,6 +659,25 @@ class ConversionPipeline:
                 interpreter.update_page_font_maps(page_font_maps)  # type: ignore[attr-defined]
             except Exception:  # pragma: no cover - defensive fallback
                 pass
+        image_cache = resources.get("page_image_cache")
+        if isinstance(image_cache, Mapping) and hasattr(interpreter, "update_page_images"):
+            normalised_cache: dict[int, list[Any]] = {}
+            for key, value in image_cache.items():
+                try:
+                    page_number = int(key)
+                except Exception:
+                    continue
+                if isinstance(value, Sequence):
+                    filtered: list[Any] = [
+                        image for image in value if hasattr(image, "bbox") and hasattr(image, "data")
+                    ]
+                    if filtered:
+                        normalised_cache[page_number] = list(filtered)
+            if normalised_cache:
+                try:
+                    interpreter.update_page_images(normalised_cache)  # type: ignore[attr-defined]
+                except Exception:  # pragma: no cover - defensive fallback
+                    pass
         return interpreter
 
     def _prepare_page_content_buffers(
@@ -1157,6 +1183,123 @@ class ConversionPipeline:
             detail = f"Iterated content stream commands for {len(summaries)} page(s) with no operators."
         else:
             detail = "No page content commands found for selected pages."
+
+        self._advance_logger(logger, detail)
+
+    def _prepare_image_extraction(
+        self,
+        parsed: ParsedDocument,
+        page_numbers: Sequence[int],
+        *,
+        logger: PipelineLogger,
+        resources: dict[str, Any],
+    ) -> None:
+        """Decode image XObject placements prior to content interpretation."""
+
+        plan = list(page_numbers)
+        resources["page_image_plan"] = plan
+
+        reader = getattr(parsed.resolver, "reader", None)
+        if reader is None:
+            resources.setdefault("page_image_summaries", [])
+            resources.setdefault("page_image_cache", {})
+            self._advance_logger(
+                logger,
+                "Image extraction provided by upstream primitives; skipping decoding stage.",
+            )
+            return
+
+        dictionaries = resources.get("page_dictionaries")
+        page_dictionary_list: list[DictionaryObject | None] = []
+        if isinstance(dictionaries, list):
+            page_dictionary_list = [
+                entry if isinstance(entry, DictionaryObject) else None for entry in dictionaries
+            ]
+
+        image_cache: dict[int, list[Any]] = {}
+        summaries: list[dict[str, Any]] = []
+        total_images = 0
+
+        pages = parsed.pages
+        for ordinal, index in enumerate(plan):
+            if index < 0 or index >= len(pages):
+                raise ValueError(
+                    f"Page index {index} out of bounds for document with {len(pages)} pages",
+                )
+
+            parsed_page = pages[index]
+            page_dict: DictionaryObject | None = None
+            if ordinal < len(page_dictionary_list):
+                page_dict = page_dictionary_list[ordinal]
+            if not isinstance(page_dict, DictionaryObject):
+                try:
+                    candidate = reader.pages[parsed_page.number]  # type: ignore[index]
+                except Exception:  # pragma: no cover - defensive fallback
+                    candidate = None
+                if isinstance(candidate, DictionaryObject):
+                    page_dict = candidate
+
+            images = []
+            if isinstance(page_dict, DictionaryObject):
+                try:
+                    images = list(extract_page_images(page_dict, reader))
+                except Exception:  # pragma: no cover - defensive fallback
+                    images = []
+
+            image_cache[parsed_page.number] = images
+            total_images += len(images)
+
+            placements: list[dict[str, Any]] = []
+            for image_index, image in enumerate(images):
+                bbox = image.bbox
+                placements.append(
+                    {
+                        "ordinal": image_index,
+                        "name": image.name,
+                        "mime_type": image.mime_type,
+                        "width": float(bbox.width()),
+                        "height": float(bbox.height()),
+                        "bbox": (
+                            float(bbox.left),
+                            float(bbox.bottom),
+                            float(bbox.right),
+                            float(bbox.top),
+                        ),
+                        "bytes": len(image.data),
+                    }
+                )
+
+            summaries.append(
+                {
+                    "page_number": parsed_page.number,
+                    "ordinal": ordinal,
+                    "image_count": len(images),
+                    "images": placements,
+                }
+            )
+
+        resources["page_image_cache"] = image_cache
+        resources["page_image_summaries"] = summaries
+
+        if summaries:
+            preview: list[str] = []
+            for entry in summaries[:3]:
+                preview.append(
+                    "p"
+                    + str(entry.get("page_number", 0) + 1)
+                    + f":{entry.get('image_count', 0)}"
+                )
+            if len(summaries) > 3:
+                preview.append("…")
+            detail = (
+                f"Pre-decoded {total_images} raster image placement(s) across {len(summaries)} page(s)"
+            )
+            if preview:
+                detail += f" ({', '.join(preview)})."
+            else:
+                detail += "."
+        else:
+            detail = "No raster images detected in selected pages; recorded empty image summaries."
 
         self._advance_logger(logger, detail)
 

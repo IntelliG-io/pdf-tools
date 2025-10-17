@@ -112,6 +112,7 @@ class PDFContentInterpreter:
         self._reader = document.resolver.reader
         self._page_states: dict[int, ContentStreamState] = {}
         self._page_font_maps: dict[int, dict[int, tuple[dict[str, str], int]]] = {}
+        self._page_image_cache: dict[int, list[PrimitiveImage]] = {}
         self.update_page_font_maps(page_font_maps)
 
     def interpret_page(self, page: ParsedPage | int) -> PageContent:
@@ -139,7 +140,11 @@ class PDFContentInterpreter:
             state=state,
             font_maps=font_maps,
         )
-        images = extract_page_images(page_obj, self._reader)
+        cached_images = self._page_image_cache.get(parsed.number)
+        if cached_images is None:
+            images = extract_page_images(page_obj, self._reader)
+        else:
+            images = list(cached_images)
         lines, paths = extract_vector_graphics(page_obj, self._reader)
 
         content.glyphs.extend(self._build_glyphs(fragments, parsed))
@@ -211,6 +216,26 @@ class PDFContentInterpreter:
                     normalised[key] = (map_dict, max(1, max_len))
             if normalised:
                 self._page_font_maps[page_index] = normalised
+
+    def update_page_images(
+        self,
+        page_images: Mapping[int, Sequence[PrimitiveImage]] | None,
+    ) -> None:
+        if not isinstance(page_images, Mapping):
+            return
+        for page_number, images in page_images.items():
+            try:
+                page_index = int(page_number)
+            except Exception:
+                continue
+            if not isinstance(images, Sequence):
+                continue
+            cached: list[PrimitiveImage] = []
+            for image in images:
+                if isinstance(image, PrimitiveImage):
+                    cached.append(image)
+            if cached or page_index not in self._page_image_cache:
+                self._page_image_cache[page_index] = list(cached)
 
     def _page_dimensions(self, geometry) -> tuple[float, float]:
         left, bottom, right, top = geometry.media_box
