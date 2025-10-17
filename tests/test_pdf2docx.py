@@ -480,15 +480,21 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert font_summary.get("page_number") == 0
     assert font_summary.get("font_count") >= 1
 
+    text_objects = text_entry.get("text_objects")
+    assert isinstance(text_objects, list)
+    text_summary = context.resources.get("page_text_summary")
+    assert isinstance(text_summary, list) and text_summary
+    text_summary_entry = text_summary[0]
+    assert text_summary_entry.get("text_objects") == len(text_objects)
+    object_resources = context.resources.get("page_text_objects")
+    assert isinstance(object_resources, list) and object_resources
+    assert object_resources[0].get("objects") == text_objects
+
     translation_maps = context.resources.get("page_font_translation_maps")
     assert isinstance(translation_maps, dict)
     assert 0 in translation_maps
     assert isinstance(translation_maps[0], dict)
 
-    text_summary = context.resources.get("page_text_summary")
-    assert isinstance(text_summary, list)
-    assert len(text_summary) == 1
-    text_summary_entry = text_summary[0]
     assert text_summary_entry.get("page_number") == 0
     assert text_summary_entry.get("glyphs") == text_entry.get("glyph_count")
     assert text_summary_entry.get("text_elements") == text_entry.get("text_element_count")
@@ -579,6 +585,75 @@ def test_text_extraction_handles_spacing_and_newlines(tmp_path: Path) -> None:
     assert any(entry.startswith(" Spaced") for entry in texts)
     assert any(entry.startswith(" Word") for entry in texts)
     assert any(entry.startswith("\nNext") for entry in texts)
+
+
+def test_text_extraction_records_text_objects(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "text-objects.pdf"
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=300)
+
+    font_dict = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font_dict)
+    resources = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})})
+    page[NameObject("/Resources")] = resources
+
+    content = (
+        "BT "
+        "/F1 12 Tf "
+        "72 220 Td "
+        "(First) Tj "
+        "(Line) Tj "
+        "ET "
+        "BT "
+        "/F1 12 Tf "
+        "72 200 Td "
+        "[(Second) -250 (Line)] TJ "
+        "ET"
+    ).encode("utf-8")
+    stream = StreamObject()
+    stream[NameObject("/Length")] = NumberObject(len(content))
+    stream._data = content
+    stream_ref = writer._add_object(stream)
+    page[NameObject("/Contents")] = stream_ref
+
+    with pdf_path.open("wb") as handle:
+        writer.write(handle)
+
+    docx_path = tmp_path / "text-objects.docx"
+    context = ConversionContext()
+    pipeline = ConversionPipeline()
+    pipeline.run(pdf_path, docx_path, context=context)
+
+    text_buffers = context.resources.get("page_text_buffers")
+    assert isinstance(text_buffers, list) and text_buffers
+    text_entry = text_buffers[0]
+    elements = text_entry.get("text_elements")
+    assert isinstance(elements, list) and len(elements) >= 3
+    text_objects = text_entry.get("text_objects")
+    assert isinstance(text_objects, list) and len(text_objects) == 2
+
+    first_object = text_objects[0]
+    assert first_object.get("text_object") == 0
+    first_indices = list(first_object.get("fragment_ordinals", ()))
+    assert first_indices and all(elements[index]["text_object"] == 0 for index in first_indices)
+
+    second_object = text_objects[1]
+    assert second_object.get("text_object") == 1
+    second_indices = list(second_object.get("fragment_ordinals", ()))
+    assert second_indices and all(elements[index]["text_object"] == 1 for index in second_indices)
+
+    ordinals = [element.get("ordinal") for element in elements]
+    assert ordinals == list(range(len(elements)))
+
+    object_resources = context.resources.get("page_text_objects")
+    assert isinstance(object_resources, list)
+    assert any(entry.get("objects") == text_objects for entry in object_resources)
 
 
 def test_pdf_document_primitives_conversion(tmp_path: Path) -> None:

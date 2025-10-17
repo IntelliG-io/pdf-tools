@@ -1081,6 +1081,9 @@ def capture_text_fragments(
     pending_space = False
     pending_newline = False
     have_emitted_text = False
+    current_text_object_index: int | None = None
+    current_text_run_index = 0
+    fragment_index = 0
 
     def _should_insert_space_from_adjustment(value: object) -> bool:
         try:
@@ -1133,6 +1136,7 @@ def capture_text_fragments(
     def _emit_text(raw: str, *, leading_space: bool = False, leading_newline: bool = False) -> None:
         nonlocal text_matrix, current_font_ref, current_font_size
         nonlocal pending_space, pending_newline, have_emitted_text
+        nonlocal current_text_object_index, current_text_run_index, fragment_index
         if not raw:
             return
         tm = text_matrix or working_state.IDENTITY_MATRIX
@@ -1191,6 +1195,9 @@ def capture_text_fragments(
                 font_size=eff_font_size,
                 vertical=vertical,
                 color=color_hex,
+                text_object=current_text_object_index,
+                text_run=current_text_run_index,
+                fragment_index=fragment_index,
             )
         )
         working_state.last_text_position = (float(x), float(y))
@@ -1199,6 +1206,8 @@ def capture_text_fragments(
         pending_space = False
         pending_newline = False
         have_emitted_text = True
+        fragment_index += 1
+        current_text_run_index += 1
 
     operations = getattr(content, "operations", [])
     for operands, operator in operations:
@@ -1220,9 +1229,19 @@ def capture_text_fragments(
             text_matrix = working_state.IDENTITY_MATRIX
             line_matrix = text_matrix
             text_objects += 1
+            current_text_object_index = text_objects - 1
+            current_text_run_index = 0
+            pending_space = False
+            pending_newline = False
+            have_emitted_text = False
         elif op == b"ET":
             text_matrix = None
             line_matrix = None
+            current_text_object_index = None
+            current_text_run_index = 0
+            pending_space = False
+            pending_newline = False
+            have_emitted_text = False
         elif op == b"Tf" and len(operands) >= 2:
             try:
                 current_font_ref = operands[0]

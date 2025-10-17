@@ -428,8 +428,11 @@ class ConversionPipeline:
             if isinstance(text_buffer, dict):
                 text_buffer["page_number"] = content.page_number
                 text_buffer["ordinal"] = position
-                text_elements = [
-                    {
+                text_elements: list[dict[str, Any]] = []
+                glyph_text: list[str] = []
+                text_object_map: dict[int, list[int]] = {}
+                for ordinal, glyph in enumerate(content.glyphs):
+                    element = {
                         "text": glyph.text,
                         "x": glyph.x,
                         "y": glyph.y,
@@ -437,14 +440,33 @@ class ConversionPipeline:
                         "font_size": glyph.font_size,
                         "color": glyph.color,
                         "vertical": glyph.vertical,
+                        "text_object": glyph.text_object,
+                        "text_run": glyph.text_run,
+                        "fragment_index": glyph.fragment_index,
+                        "ordinal": ordinal,
                     }
-                    for glyph in content.glyphs
-                ]
-                glyph_text = [element["text"] for element in text_elements]
+                    text_elements.append(element)
+                    glyph_text.append(glyph.text)
+                    if glyph.text_object is not None:
+                        index = int(glyph.text_object)
+                        bucket = text_object_map.setdefault(index, [])
+                        bucket.append(ordinal)
                 text_buffer["text_elements"] = text_elements
                 text_buffer["text_element_count"] = len(text_elements)
                 text_buffer["glyphs"] = glyph_text
                 text_buffer["glyph_count"] = len(glyph_text)
+                text_objects = [
+                    {
+                        "text_object": key,
+                        "fragment_ordinals": tuple(ordinals),
+                        "fragment_count": len(ordinals),
+                        "first_fragment": ordinals[0],
+                        "last_fragment": ordinals[-1],
+                    }
+                    for key, ordinals in sorted(text_object_map.items())
+                ]
+                text_buffer["text_objects"] = text_objects
+                text_buffer["text_object_count"] = len(text_objects)
                 fonts_used = sorted(
                     {
                         element["font_name"]
@@ -504,6 +526,9 @@ class ConversionPipeline:
                     "text_elements": entry.get(
                         "text_element_count", len(entry.get("text_elements", ()))
                     ),
+                    "text_objects": entry.get(
+                        "text_object_count", len(entry.get("text_objects", ()))
+                    ),
                     "font_count": entry.get("font_count", 0),
                     "fonts_with_translation": sum(
                         1 for font in entry.get("fonts", ()) if isinstance(font, dict) and font.get("has_translation")
@@ -517,6 +542,16 @@ class ConversionPipeline:
                     "page_number": entry.get("page_number"),
                     "ordinal": entry.get("ordinal"),
                     "elements": entry.get("text_elements", []),
+                    "text_objects": entry.get("text_objects", []),
+                }
+                for entry in text_buffers
+                if isinstance(entry, dict)
+            ]
+            resources["page_text_objects"] = [
+                {
+                    "page_number": entry.get("page_number"),
+                    "ordinal": entry.get("ordinal"),
+                    "objects": entry.get("text_objects", []),
                 }
                 for entry in text_buffers
                 if isinstance(entry, dict)
@@ -1238,6 +1273,8 @@ class ConversionPipeline:
                 "font_count": len(fonts_info),
                 "font_maps": font_lookup,
                 "fonts_used": [],
+                "text_objects": [],
+                "text_object_count": 0,
             }
             text_buffers.append(buffer_entry)
             font_summaries.append(

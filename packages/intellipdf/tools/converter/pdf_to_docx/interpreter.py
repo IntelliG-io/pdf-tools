@@ -44,6 +44,9 @@ class Glyph:
     font_size: float | None = None
     color: str | None = None
     vertical: bool = False
+    text_object: int | None = None
+    text_run: int | None = None
+    fragment_index: int | None = None
 
 
 @dataclass(slots=True)
@@ -275,6 +278,9 @@ class PDFContentInterpreter:
                 font_size=float(font_size) if font_size is not None else None,
                 color=fragment.color,
                 vertical=fragment.vertical,
+                text_object=fragment.text_object,
+                text_run=fragment.text_run,
+                fragment_index=fragment.fragment_index,
             )
 
     def _build_images(self, images: Sequence[PrimitiveImage], page: ParsedPage) -> Iterable[PageImage]:

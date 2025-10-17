@@ -45,6 +45,9 @@ class CapturedText:
     font_size: float | None
     vertical: bool = False
     color: str | None = None
+    text_object: int | None = None
+    text_run: int | None = None
+    fragment_index: int | None = None
 
 
 def normalise_text_content(text: str, *, strip: bool) -> str:
