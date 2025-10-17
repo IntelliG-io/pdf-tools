@@ -30,7 +30,10 @@ from .tools.converter.pdf_to_docx.converter.fonts import (
     font_translation_maps,
 )
 from .tools.converter.pdf_to_docx.converter.images import extract_page_images
-from .tools.converter.pdf_to_docx.converter.reader import summarise_content_stream_commands
+from .tools.converter.pdf_to_docx.converter.reader import (
+    extract_vector_graphics,
+    summarise_content_stream_commands,
+)
 
 __all__ = ["ConversionPipeline", "convert_pdf_to_docx"]
 
@@ -147,6 +150,12 @@ class ConversionPipeline:
             resources=resources,
         )
         self._prepare_image_extraction(
+            parsed,
+            page_numbers,
+            logger=logger,
+            resources=resources,
+        )
+        self._prepare_vector_extraction(
             parsed,
             page_numbers,
             logger=logger,
@@ -676,6 +685,47 @@ class ConversionPipeline:
             if normalised_cache:
                 try:
                     interpreter.update_page_images(normalised_cache)  # type: ignore[attr-defined]
+                except Exception:  # pragma: no cover - defensive fallback
+                    pass
+        vector_cache = resources.get("page_vector_cache")
+        if isinstance(vector_cache, Mapping) and hasattr(interpreter, "update_page_vectors"):
+            normalised_vectors: dict[int, dict[str, list[Any]]] = {}
+            for key, value in vector_cache.items():
+                try:
+                    page_number = int(key)
+                except Exception:
+                    continue
+                lines: list[Any] = []
+                paths: list[Any] = []
+                if isinstance(value, Mapping):
+                    raw_lines = value.get("lines")
+                    raw_paths = value.get("paths")
+                elif isinstance(value, tuple):
+                    raw_lines = value[0] if len(value) > 0 else None
+                    raw_paths = value[1] if len(value) > 1 else None
+                else:
+                    raw_lines = value
+                    raw_paths = None
+                if isinstance(raw_lines, Sequence):
+                    lines = [
+                        entry
+                        for entry in raw_lines
+                        if hasattr(entry, "start") and hasattr(entry, "end")
+                    ]
+                if isinstance(raw_paths, Sequence):
+                    paths = [
+                        entry
+                        for entry in raw_paths
+                        if hasattr(entry, "subpaths")
+                    ]
+                if lines or paths or page_number not in normalised_vectors:
+                    normalised_vectors[page_number] = {
+                        "lines": list(lines),
+                        "paths": list(paths),
+                    }
+            if normalised_vectors:
+                try:
+                    interpreter.update_page_vectors(normalised_vectors)  # type: ignore[attr-defined]
                 except Exception:  # pragma: no cover - defensive fallback
                     pass
         return interpreter
@@ -1300,6 +1350,191 @@ class ConversionPipeline:
                 detail += "."
         else:
             detail = "No raster images detected in selected pages; recorded empty image summaries."
+
+        self._advance_logger(logger, detail)
+
+    def _prepare_vector_extraction(
+        self,
+        parsed: ParsedDocument,
+        page_numbers: Sequence[int],
+        *,
+        logger: PipelineLogger,
+        resources: dict[str, Any],
+    ) -> None:
+        """Capture vector drawing primitives prior to interpretation."""
+
+        plan = list(page_numbers)
+        resources["page_vector_plan"] = plan
+
+        reader = getattr(parsed.resolver, "reader", None)
+        if reader is None:
+            resources.setdefault("page_vector_summaries", [])
+            resources.setdefault("page_vector_cache", {})
+            self._advance_logger(
+                logger,
+                "Vector extraction provided by upstream primitives; skipping decoding stage.",
+            )
+            return
+
+        dictionaries = resources.get("page_dictionaries")
+        page_dictionary_list: list[DictionaryObject | None] = []
+        if isinstance(dictionaries, list):
+            page_dictionary_list = [
+                entry if isinstance(entry, DictionaryObject) else None for entry in dictionaries
+            ]
+
+        vector_cache: dict[int, dict[str, Any]] = {}
+        summaries: list[dict[str, Any]] = []
+        total_lines = 0
+        total_paths = 0
+
+        pages = parsed.pages
+        for ordinal, index in enumerate(plan):
+            if index < 0 or index >= len(pages):
+                raise ValueError(
+                    f"Page index {index} out of bounds for document with {len(pages)} pages",
+                )
+
+            parsed_page = pages[index]
+            page_dict: DictionaryObject | None = None
+            if ordinal < len(page_dictionary_list):
+                page_dict = page_dictionary_list[ordinal]
+            if not isinstance(page_dict, DictionaryObject):
+                try:
+                    candidate = reader.pages[parsed_page.number]  # type: ignore[index]
+                except Exception:  # pragma: no cover - defensive fallback
+                    candidate = None
+                if isinstance(candidate, DictionaryObject):
+                    page_dict = candidate
+
+            lines: list[Any] = []
+            paths: list[Any] = []
+            if isinstance(page_dict, DictionaryObject):
+                try:
+                    captured_lines, captured_paths = extract_vector_graphics(page_dict, reader)
+                    lines = list(captured_lines)
+                    paths = list(captured_paths)
+                except Exception:  # pragma: no cover - defensive fallback
+                    lines = []
+                    paths = []
+
+            vector_cache[parsed_page.number] = {"lines": lines, "paths": paths}
+            total_lines += len(lines)
+            total_paths += len(paths)
+
+            line_samples: list[dict[str, Any]] = []
+            for line in lines[:5]:
+                if not hasattr(line, "start") or not hasattr(line, "end"):
+                    continue
+                try:
+                    start = tuple(float(coord) for coord in line.start)
+                    end = tuple(float(coord) for coord in line.end)
+                except Exception:
+                    continue
+                sample: dict[str, Any] = {
+                    "start": start,
+                    "end": end,
+                }
+                stroke_width = getattr(line, "stroke_width", None)
+                if isinstance(stroke_width, (int, float)):
+                    sample["stroke_width"] = float(stroke_width)
+                line_samples.append(sample)
+
+            path_samples: list[dict[str, Any]] = []
+            for path in paths[:3]:
+                if not hasattr(path, "subpaths"):
+                    continue
+                subpaths = getattr(path, "subpaths", [])
+                try:
+                    subpath_count = len(subpaths)
+                except Exception:
+                    subpath_count = 0
+                point_count = 0
+                xs: list[float] = []
+                ys: list[float] = []
+                for subpath in subpaths:
+                    if not isinstance(subpath, (list, tuple)):
+                        continue
+                    for point in subpath:
+                        if not isinstance(point, (list, tuple)) or len(point) != 2:
+                            continue
+                        try:
+                            x = float(point[0])
+                            y = float(point[1])
+                        except Exception:
+                            continue
+                        xs.append(x)
+                        ys.append(y)
+                        point_count += 1
+                bbox: tuple[float, float, float, float] | None = None
+                if xs and ys:
+                    bbox = (min(xs), min(ys), max(xs), max(ys))
+                stroke_color = getattr(path, "stroke_color", None)
+                fill_color = getattr(path, "fill_color", None)
+                stroke_width = getattr(path, "stroke_width", None)
+                stroke_alpha = getattr(path, "stroke_alpha", None)
+                fill_alpha = getattr(path, "fill_alpha", None)
+                sample = {
+                    "subpaths": subpath_count,
+                    "points": point_count,
+                    "stroke_color": tuple(float(value) for value in stroke_color)
+                    if isinstance(stroke_color, (tuple, list))
+                    else None,
+                    "fill_color": tuple(float(value) for value in fill_color)
+                    if isinstance(fill_color, (tuple, list))
+                    else None,
+                    "stroke_width": float(stroke_width)
+                    if isinstance(stroke_width, (int, float))
+                    else None,
+                    "fill_rule": getattr(path, "fill_rule", None),
+                    "stroke_alpha": float(stroke_alpha)
+                    if isinstance(stroke_alpha, (int, float))
+                    else None,
+                    "fill_alpha": float(fill_alpha)
+                    if isinstance(fill_alpha, (int, float))
+                    else None,
+                    "is_rectangle": getattr(path, "is_rectangle", False),
+                    "bbox": bbox,
+                }
+                path_samples.append(sample)
+
+            summaries.append(
+                {
+                    "page_number": parsed_page.number,
+                    "ordinal": ordinal,
+                    "line_count": len(lines),
+                    "path_count": len(paths),
+                    "line_samples": line_samples,
+                    "path_samples": path_samples,
+                }
+            )
+
+        resources["page_vector_cache"] = vector_cache
+        resources["page_vector_summaries"] = summaries
+
+        if summaries:
+            preview: list[str] = []
+            for entry in summaries[:3]:
+                descriptor = "p" + str(entry.get("page_number", 0) + 1)
+                descriptor += (
+                    f"=lines:{entry.get('line_count', 0)},paths:{entry.get('path_count', 0)}"
+                )
+                preview.append(descriptor)
+            if len(summaries) > 3:
+                preview.append("…")
+            detail = (
+                "Captured "
+                f"{total_lines} line segment(s) and {total_paths} vector path(s) "
+                f"across {len(summaries)} page(s)"
+            )
+            if preview:
+                detail += f" ({', '.join(preview)})."
+            else:
+                detail += "."
+        else:
+            detail = (
+                "No vector graphics detected in selected pages; recorded empty vector summaries."
+            )
 
         self._advance_logger(logger, detail)
 

@@ -64,7 +64,11 @@ from intellipdf.tools.converter.pdf_to_docx.primitives import (
 from intellipdf.tools.converter.pdf_to_docx.converter.images import path_to_picture
 from intellipdf.tools.converter.pdf_to_docx.converter.layout import collect_page_placements
 from intellipdf.tools.converter.pdf_to_docx.docx import write_docx
-from intellipdf.tools.converter.pdf_to_docx.interpreter import PageImage
+from intellipdf.tools.converter.pdf_to_docx.interpreter import (
+    LineSegment,
+    PageImage,
+    VectorPath,
+)
 
 
 def _png_bytes(width: int, height: int, color: tuple[int, int, int, int] = (255, 0, 0, 255)) -> bytes:
@@ -177,6 +181,20 @@ def _create_pdf_with_image(
     content = StreamObject()
     content._data = f"q {cm} cm /Im1 Do Q".encode("ascii")
     content[NameObject("/Length")] = NumberObject(len(content._data))
+    page[NameObject("/Contents")] = writer._add_object(content)
+
+    with path.open("wb") as fh:
+        writer.write(fh)
+
+
+def _create_pdf_with_vector_shapes(path: Path) -> None:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=300)
+
+    content = StreamObject()
+    drawing = b"q 2 w 0 0 0 RG 0 0 1 rg 40 50 180 120 re B Q"
+    content._data = drawing
+    content[NameObject("/Length")] = NumberObject(len(drawing))
     page[NameObject("/Contents")] = writer._add_object(content)
 
     with path.open("wb") as fh:
@@ -365,6 +383,9 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     image_plan = context.resources.get("page_image_plan")
     assert image_plan == [0]
 
+    vector_plan = context.resources.get("page_vector_plan")
+    assert vector_plan == [0]
+
     image_summaries = context.resources.get("page_image_summaries")
     assert isinstance(image_summaries, list)
     assert len(image_summaries) == 1
@@ -378,6 +399,22 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert 0 in image_cache
     cached_images = image_cache[0]
     assert isinstance(cached_images, list)
+
+    vector_summaries = context.resources.get("page_vector_summaries")
+    assert isinstance(vector_summaries, list)
+    assert len(vector_summaries) == 1
+    vector_summary = vector_summaries[0]
+    assert vector_summary.get("page_number") == 0
+    assert vector_summary.get("line_count") == 0
+    assert vector_summary.get("path_count") == 0
+
+    vector_cache = context.resources.get("page_vector_cache")
+    assert isinstance(vector_cache, dict)
+    assert 0 in vector_cache
+    cached_vectors = vector_cache[0]
+    assert isinstance(cached_vectors, dict)
+    assert isinstance(cached_vectors.get("lines"), list)
+    assert isinstance(cached_vectors.get("paths"), list)
 
     text_plan = context.resources.get("page_text_plan")
     assert text_plan == [0]
@@ -416,6 +453,8 @@ def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
     assert "crop_box" not in dimensions or dimensions.get("crop_box") is None
     assert buffer_entry.get("glyph_count") == len(buffer_entry.get("glyphs", ()))
     assert buffer_entry.get("image_count") == len(buffer_entry.get("images", ()))
+    assert buffer_entry.get("line_count") == len(buffer_entry.get("lines", ()))
+    assert buffer_entry.get("path_count") == len(buffer_entry.get("paths", ()))
 
     content_streams = context.resources.get("page_content_streams")
     assert isinstance(content_streams, dict)
@@ -646,6 +685,58 @@ def test_conversion_pipeline_prepares_image_resources(tmp_path: Path) -> None:
     assert isinstance(content_summary, list) and len(content_summary) == 1
     summary_entry = content_summary[0]
     assert summary_entry.get("images") == 1
+
+
+def test_conversion_pipeline_prepares_vector_resources(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "vector-buffers.pdf"
+    _create_pdf_with_vector_shapes(pdf_path)
+
+    docx_path = tmp_path / "vector-buffers.docx"
+    context = ConversionContext()
+    pipeline = ConversionPipeline()
+    pipeline.run(pdf_path, docx_path, context=context)
+
+    vector_plan = context.resources.get("page_vector_plan")
+    assert vector_plan == [0]
+
+    vector_summaries = context.resources.get("page_vector_summaries")
+    assert isinstance(vector_summaries, list) and len(vector_summaries) == 1
+    summary = vector_summaries[0]
+    assert summary.get("line_count") == 4
+    assert summary.get("path_count") == 1
+    line_samples = summary.get("line_samples")
+    assert isinstance(line_samples, list) and line_samples
+    sample_line = line_samples[0]
+    assert pytest.approx(sample_line["start"][0]) == 40.0
+    assert pytest.approx(sample_line["start"][1]) == 50.0
+    assert pytest.approx(sample_line["end"][0]) == 220.0
+    path_samples = summary.get("path_samples")
+    assert isinstance(path_samples, list) and path_samples
+    path_sample = path_samples[0]
+    assert path_sample.get("is_rectangle") is True
+    assert path_sample.get("subpaths") >= 1
+    assert path_sample.get("bbox") == pytest.approx((40.0, 50.0, 220.0, 170.0))
+
+    vector_cache = context.resources.get("page_vector_cache")
+    assert isinstance(vector_cache, dict) and 0 in vector_cache
+    cache_entry = vector_cache[0]
+    assert isinstance(cache_entry, dict)
+    cached_lines = cache_entry.get("lines")
+    cached_paths = cache_entry.get("paths")
+    assert isinstance(cached_lines, list) and len(cached_lines) == 4
+    assert isinstance(cached_paths, list) and len(cached_paths) == 1
+
+    buffers = context.resources.get("page_content_buffers")
+    assert isinstance(buffers, list) and buffers
+    buffer_entry = buffers[0]
+    assert buffer_entry.get("line_count") == 4
+    assert buffer_entry.get("path_count") == 1
+    extracted_lines = buffer_entry.get("lines")
+    extracted_paths = buffer_entry.get("paths")
+    assert isinstance(extracted_lines, list) and len(extracted_lines) == 4
+    assert isinstance(extracted_lines[0], LineSegment)
+    assert isinstance(extracted_paths, list) and len(extracted_paths) == 1
+    assert isinstance(extracted_paths[0], VectorPath)
 
 
 def test_text_extraction_handles_spacing_and_newlines(tmp_path: Path) -> None:

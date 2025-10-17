@@ -113,6 +113,7 @@ class PDFContentInterpreter:
         self._page_states: dict[int, ContentStreamState] = {}
         self._page_font_maps: dict[int, dict[int, tuple[dict[str, str], int]]] = {}
         self._page_image_cache: dict[int, list[PrimitiveImage]] = {}
+        self._page_vector_cache: dict[int, dict[str, list[Any]]] = {}
         self.update_page_font_maps(page_font_maps)
 
     def interpret_page(self, page: ParsedPage | int) -> PageContent:
@@ -145,7 +146,26 @@ class PDFContentInterpreter:
             images = extract_page_images(page_obj, self._reader)
         else:
             images = list(cached_images)
-        lines, paths = extract_vector_graphics(page_obj, self._reader)
+        cached_vectors = self._page_vector_cache.get(parsed.number)
+        cached_lines: list[PrimitiveLine] | None = None
+        cached_paths: list[PrimitivePath] | None = None
+        if isinstance(cached_vectors, Mapping):
+            cached_lines = [
+                line
+                for line in cached_vectors.get("lines", [])
+                if isinstance(line, PrimitiveLine)
+            ]
+            cached_paths = [
+                path
+                for path in cached_vectors.get("paths", [])
+                if isinstance(path, PrimitivePath)
+            ]
+        lines_fallback: Sequence[PrimitiveLine] | None = None
+        paths_fallback: Sequence[PrimitivePath] | None = None
+        if cached_lines is None or cached_paths is None:
+            lines_fallback, paths_fallback = extract_vector_graphics(page_obj, self._reader)
+        lines = cached_lines if cached_lines is not None else list(lines_fallback or [])
+        paths = cached_paths if cached_paths is not None else list(paths_fallback or [])
 
         content.glyphs.extend(self._build_glyphs(fragments, parsed))
         content.images.extend(self._build_images(images, parsed))
@@ -236,6 +256,49 @@ class PDFContentInterpreter:
                     cached.append(image)
             if cached or page_index not in self._page_image_cache:
                 self._page_image_cache[page_index] = list(cached)
+
+    def update_page_vectors(
+        self,
+        page_vectors: Mapping[int, Mapping[str, Sequence[Any]]] | None,
+    ) -> None:
+        if not isinstance(page_vectors, Mapping):
+            return
+        for page_number, entry in page_vectors.items():
+            try:
+                page_index = int(page_number)
+            except Exception:
+                continue
+            candidate_lines: Sequence[Any] | None = None
+            candidate_paths: Sequence[Any] | None = None
+            if isinstance(entry, Mapping):
+                candidate_lines = entry.get("lines")  # type: ignore[assignment]
+                candidate_paths = entry.get("paths")  # type: ignore[assignment]
+            elif isinstance(entry, Sequence):
+                if len(entry) >= 1:
+                    candidate_lines = entry[0]  # type: ignore[assignment]
+                if len(entry) >= 2:
+                    candidate_paths = entry[1]  # type: ignore[assignment]
+            else:
+                candidate_lines = entry  # type: ignore[assignment]
+            lines: list[PrimitiveLine] = []
+            if isinstance(candidate_lines, Sequence):
+                for line in candidate_lines:
+                    if isinstance(line, PrimitiveLine):
+                        lines.append(line)
+            elif isinstance(candidate_lines, PrimitiveLine):
+                lines.append(candidate_lines)
+            paths: list[PrimitivePath] = []
+            if isinstance(candidate_paths, Sequence):
+                for path in candidate_paths:
+                    if isinstance(path, PrimitivePath):
+                        paths.append(path)
+            elif isinstance(candidate_paths, PrimitivePath):
+                paths.append(candidate_paths)
+            if lines or paths or page_index not in self._page_vector_cache:
+                self._page_vector_cache[page_index] = {
+                    "lines": list(lines),
+                    "paths": list(paths),
+                }
 
     def _page_dimensions(self, geometry) -> tuple[float, float]:
         left, bottom, right, top = geometry.media_box
