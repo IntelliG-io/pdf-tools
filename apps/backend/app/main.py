@@ -11,7 +11,9 @@ from typing import Iterable, List, Sequence
 from zipfile import ZipFile
 
 from fastapi import (
+    APIRouter,
     BackgroundTasks,
+    Depends,
     FastAPI,
     File,
     Form,
@@ -34,7 +36,10 @@ from intellipdf import (
 )
 from intellipdf.tools.splitter import IntelliPDFSplitError, InvalidPageRangeError, PageRange, parse_page_ranges
 
+from .auth import auth_router, require_authenticated_user, require_roles
+
 app = FastAPI(title="IntelliPDF API", version="0.2.0")
+api_router = APIRouter(prefix="/api", dependencies=[Depends(require_authenticated_user)])
 DOCS_PREFIX = "/api"
 
 def _cleanup_temp_dir(background_tasks: BackgroundTasks, temp_dir: TemporaryDirectory) -> None:
@@ -232,7 +237,14 @@ async def prefixed_swagger_ui(request: Request) -> HTMLResponse:
     )
 
 
-@app.post("/merge", response_class=FileResponse)
+@api_router.get("/admin/overview", dependencies=[Depends(require_roles("admin"))])
+async def admin_overview() -> dict[str, str]:
+    """Simple admin-only endpoint demonstrating role-protected access."""
+
+    return {"status": "ok"}
+
+
+@api_router.post("/merge", response_class=FileResponse)
 async def merge_documents(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(..., description="PDF files to merge"),
@@ -310,7 +322,7 @@ async def merge_documents(
     )
 
 
-@app.post(
+@api_router.post(
     "/split/ranges",
     response_class=FileResponse,
     summary="Extract specific page ranges",
@@ -356,7 +368,7 @@ async def extract_page_ranges(
     )
 
 
-@app.post(
+@api_router.post(
     "/split/pages",
     response_class=FileResponse,
     summary="Split a PDF at specific pages",
@@ -424,7 +436,7 @@ async def split_at_pages(
     )
 
 
-@app.post(
+@api_router.post(
     "/split/every-n",
     response_class=FileResponse,
     summary="Split a PDF every N pages",
@@ -478,7 +490,7 @@ async def split_every_n(
     )
 
 
-@app.post(
+@api_router.post(
     "/split/all-pages",
     response_class=FileResponse,
     summary="Extract every page into individual PDFs",
@@ -526,7 +538,7 @@ async def extract_all_pages(
     )
 
 
-@app.post(
+@api_router.post(
     "/convert/pdf-to-docx",
     response_class=FileResponse,
     summary="Convert a PDF document to DOCX",
@@ -590,6 +602,9 @@ async def convert_pdf_to_docx_endpoint(
         headers=headers,
     )
 
+
+app.include_router(auth_router)
+app.include_router(api_router)
 
 __all__ = ["app"]
 
