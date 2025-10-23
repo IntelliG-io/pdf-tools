@@ -10,7 +10,11 @@ import copy
 from pypdf.generic import DictionaryObject
 
 from intellipdf.core.parser import ParsedDocument, ParsedPage
-from .converter.reader import capture_text_fragments, extract_vector_graphics
+from .converter.reader import (
+    ContentStreamState,
+    capture_text_fragments,
+    extract_vector_graphics,
+)
 from .converter.images import extract_page_images
 from .converter import ConversionMetadata, ConversionOptions, ConversionResult, PdfToDocxConverter
 from .primitives import BoundingBox, Image as PrimitiveImage, Line as PrimitiveLine, Path as PrimitivePath
@@ -40,6 +44,9 @@ class Glyph:
     font_size: float | None = None
     color: str | None = None
     vertical: bool = False
+    text_object: int | None = None
+    text_run: int | None = None
+    fragment_index: int | None = None
 
 
 @dataclass(slots=True)
@@ -95,9 +102,19 @@ class PageContent:
 class PDFContentInterpreter:
     """Decode PDF content streams into structured primitives."""
 
-    def __init__(self, document: ParsedDocument) -> None:
+    def __init__(
+        self,
+        document: ParsedDocument,
+        *,
+        page_font_maps: Mapping[int, Mapping[int, tuple[dict[str, str], int]]] | None = None,
+    ) -> None:
         self.document = document
         self._reader = document.resolver.reader
+        self._page_states: dict[int, ContentStreamState] = {}
+        self._page_font_maps: dict[int, dict[int, tuple[dict[str, str], int]]] = {}
+        self._page_image_cache: dict[int, list[PrimitiveImage]] = {}
+        self._page_vector_cache: dict[int, dict[str, list[Any]]] = {}
+        self.update_page_font_maps(page_font_maps)
 
     def interpret_page(self, page: ParsedPage | int) -> PageContent:
         """Interpret a :class:`ParsedPage` (or page index) into primitives."""
@@ -116,9 +133,39 @@ class PDFContentInterpreter:
         if page_obj is None:
             return content
 
-        fragments = capture_text_fragments(page_obj, self._reader)
-        images = extract_page_images(page_obj, self._reader)
-        lines, paths = extract_vector_graphics(page_obj, self._reader)
+        state = self._initialise_page_state(parsed.number)
+        font_maps = self._page_font_maps.get(parsed.number)
+        fragments = capture_text_fragments(
+            page_obj,
+            self._reader,
+            state=state,
+            font_maps=font_maps,
+        )
+        cached_images = self._page_image_cache.get(parsed.number)
+        if cached_images is None:
+            images = extract_page_images(page_obj, self._reader)
+        else:
+            images = list(cached_images)
+        cached_vectors = self._page_vector_cache.get(parsed.number)
+        cached_lines: list[PrimitiveLine] | None = None
+        cached_paths: list[PrimitivePath] | None = None
+        if isinstance(cached_vectors, Mapping):
+            cached_lines = [
+                line
+                for line in cached_vectors.get("lines", [])
+                if isinstance(line, PrimitiveLine)
+            ]
+            cached_paths = [
+                path
+                for path in cached_vectors.get("paths", [])
+                if isinstance(path, PrimitivePath)
+            ]
+        lines_fallback: Sequence[PrimitiveLine] | None = None
+        paths_fallback: Sequence[PrimitivePath] | None = None
+        if cached_lines is None or cached_paths is None:
+            lines_fallback, paths_fallback = extract_vector_graphics(page_obj, self._reader)
+        lines = cached_lines if cached_lines is not None else list(lines_fallback or [])
+        paths = cached_paths if cached_paths is not None else list(paths_fallback or [])
 
         content.glyphs.extend(self._build_glyphs(fragments, parsed))
         content.images.extend(self._build_images(images, parsed))
@@ -141,6 +188,117 @@ class PDFContentInterpreter:
             return self._reader.pages[page.number]  # type: ignore[index]
         except Exception:
             return None
+
+    def _initialise_page_state(self, page_number: int) -> ContentStreamState:
+        state = ContentStreamState()
+        state.reset()
+        self._page_states[page_number] = state
+        return state
+
+    def snapshot_state(self, page_number: int) -> dict[str, Any] | None:
+        state = self._page_states.get(page_number)
+        if state is None:
+            return None
+        return state.snapshot(page_number=page_number)
+
+    def default_state(self) -> ContentStreamState:
+        state = ContentStreamState()
+        state.reset()
+        return state
+
+    def update_page_font_maps(
+        self,
+        page_font_maps: Mapping[int, Mapping[int, tuple[dict[str, str], int]]] | None,
+    ) -> None:
+        if not isinstance(page_font_maps, Mapping):
+            return
+        for page_number, mapping in page_font_maps.items():
+            try:
+                page_index = int(page_number)
+            except Exception:
+                continue
+            if not isinstance(mapping, Mapping):
+                continue
+            normalised: dict[int, tuple[dict[str, str], int]] = {}
+            for dict_id, entry in mapping.items():
+                try:
+                    key = int(dict_id)
+                except Exception:
+                    continue
+                if (
+                    isinstance(entry, tuple)
+                    and len(entry) == 2
+                    and isinstance(entry[0], Mapping)
+                ):
+                    map_dict = dict(entry[0])
+                    raw_max = entry[1]
+                    max_len = int(raw_max) if isinstance(raw_max, (int, float)) else 1
+                    normalised[key] = (map_dict, max(1, max_len))
+            if normalised:
+                self._page_font_maps[page_index] = normalised
+
+    def update_page_images(
+        self,
+        page_images: Mapping[int, Sequence[PrimitiveImage]] | None,
+    ) -> None:
+        if not isinstance(page_images, Mapping):
+            return
+        for page_number, images in page_images.items():
+            try:
+                page_index = int(page_number)
+            except Exception:
+                continue
+            if not isinstance(images, Sequence):
+                continue
+            cached: list[PrimitiveImage] = []
+            for image in images:
+                if isinstance(image, PrimitiveImage):
+                    cached.append(image)
+            if cached or page_index not in self._page_image_cache:
+                self._page_image_cache[page_index] = list(cached)
+
+    def update_page_vectors(
+        self,
+        page_vectors: Mapping[int, Mapping[str, Sequence[Any]]] | None,
+    ) -> None:
+        if not isinstance(page_vectors, Mapping):
+            return
+        for page_number, entry in page_vectors.items():
+            try:
+                page_index = int(page_number)
+            except Exception:
+                continue
+            candidate_lines: Sequence[Any] | None = None
+            candidate_paths: Sequence[Any] | None = None
+            if isinstance(entry, Mapping):
+                candidate_lines = entry.get("lines")  # type: ignore[assignment]
+                candidate_paths = entry.get("paths")  # type: ignore[assignment]
+            elif isinstance(entry, Sequence):
+                if len(entry) >= 1:
+                    candidate_lines = entry[0]  # type: ignore[assignment]
+                if len(entry) >= 2:
+                    candidate_paths = entry[1]  # type: ignore[assignment]
+            else:
+                candidate_lines = entry  # type: ignore[assignment]
+            lines: list[PrimitiveLine] = []
+            if isinstance(candidate_lines, Sequence):
+                for line in candidate_lines:
+                    if isinstance(line, PrimitiveLine):
+                        lines.append(line)
+            elif isinstance(candidate_lines, PrimitiveLine):
+                lines.append(candidate_lines)
+            paths: list[PrimitivePath] = []
+            if isinstance(candidate_paths, Sequence):
+                for path in candidate_paths:
+                    if isinstance(path, PrimitivePath):
+                        paths.append(path)
+            elif isinstance(candidate_paths, PrimitivePath):
+                paths.append(candidate_paths)
+            if lines or paths or page_index not in self._page_vector_cache:
+                self._page_vector_cache[page_index] = {
+                    "lines": list(lines),
+                    "paths": list(paths),
+                }
 
     def _page_dimensions(self, geometry) -> tuple[float, float]:
         left, bottom, right, top = geometry.media_box
@@ -208,6 +366,9 @@ class PDFContentInterpreter:
                 font_size=float(font_size) if font_size is not None else None,
                 color=fragment.color,
                 vertical=fragment.vertical,
+                text_object=fragment.text_object,
+                text_run=fragment.text_run,
+                fragment_index=fragment.fragment_index,
             )
 
     def _build_images(self, images: Sequence[PrimitiveImage], page: ParsedPage) -> Iterable[PageImage]:

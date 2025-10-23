@@ -19,6 +19,7 @@ from pypdf.generic import (
 )
 
 from intellipdf import ConversionMetadata, ConversionOptions, convert_document
+from intellipdf.converter import ConversionPipeline
 from intellipdf.tools.converter.pdf_to_docx.converter import PdfToDocxConverter
 from intellipdf.tools.converter.pdf_to_docx.converter import (
     _DocumentBuilder,
@@ -35,6 +36,7 @@ from intellipdf.tools.converter.pdf_to_docx.converter.reader import (
     extract_vector_graphics,
 )
 from intellipdf.tools.converter.pdf_to_docx.converter.text import CapturedText, text_fragments_to_blocks
+from intellipdf.tools.common.interfaces import ConversionContext
 from intellipdf.tools.converter.pdf_to_docx.ir import (
     Document as IRDocument,
     DocumentMetadata,
@@ -62,6 +64,11 @@ from intellipdf.tools.converter.pdf_to_docx.primitives import (
 from intellipdf.tools.converter.pdf_to_docx.converter.images import path_to_picture
 from intellipdf.tools.converter.pdf_to_docx.converter.layout import collect_page_placements
 from intellipdf.tools.converter.pdf_to_docx.docx import write_docx
+from intellipdf.tools.converter.pdf_to_docx.interpreter import (
+    LineSegment,
+    PageImage,
+    VectorPath,
+)
 
 
 def _png_bytes(width: int, height: int, color: tuple[int, int, int, int] = (255, 0, 0, 255)) -> bytes:
@@ -98,7 +105,13 @@ def _png_bytes(width: int, height: int, color: tuple[int, int, int, int] = (255,
     idat = chunk(b"IDAT", payload)
     iend = chunk(b"IEND", b"")
     return signature + ihdr + idat + iend
-def _create_pdf(path: Path, text: str, metadata: dict[str, str] | None = None) -> None:
+def _create_pdf(
+    path: Path,
+    text: str,
+    metadata: dict[str, str] | None = None,
+    *,
+    password: str | None = None,
+) -> None:
     writer = PdfWriter()
     page = writer.add_blank_page(width=200, height=200)
 
@@ -123,6 +136,67 @@ def _create_pdf(path: Path, text: str, metadata: dict[str, str] | None = None) -
     if metadata:
         writer.add_metadata(metadata)
 
+    if password:
+        writer.encrypt(password)
+
+    with path.open("wb") as fh:
+        writer.write(fh)
+
+
+def _create_pdf_with_image(
+    path: Path,
+    *,
+    matrix: tuple[float, float, float, float, float, float] = (200, 0, 0, 200, 50, 60),
+) -> None:
+    import zlib
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=300)
+
+    raw = bytes([255, 0, 0] * 4)
+    encoded = zlib.compress(raw)
+    image_stream = StreamObject()
+    image_stream.update(
+        {
+            NameObject("/Type"): NameObject("/XObject"),
+            NameObject("/Subtype"): NameObject("/Image"),
+            NameObject("/Width"): NumberObject(2),
+            NameObject("/Height"): NumberObject(2),
+            NameObject("/ColorSpace"): NameObject("/DeviceRGB"),
+            NameObject("/BitsPerComponent"): NumberObject(8),
+            NameObject("/Filter"): NameObject("/FlateDecode"),
+        }
+    )
+    image_stream._data = encoded
+    image_ref = writer._add_object(image_stream)
+
+    resources = DictionaryObject(
+        {NameObject("/XObject"): DictionaryObject({NameObject("/Im1"): image_ref})}
+    )
+    page[NameObject("/Resources")] = resources
+
+    cm = " ".join(
+        str(int(value)) if float(value).is_integer() else str(value) for value in matrix
+    )
+    content = StreamObject()
+    content._data = f"q {cm} cm /Im1 Do Q".encode("ascii")
+    content[NameObject("/Length")] = NumberObject(len(content._data))
+    page[NameObject("/Contents")] = writer._add_object(content)
+
+    with path.open("wb") as fh:
+        writer.write(fh)
+
+
+def _create_pdf_with_vector_shapes(path: Path) -> None:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=300)
+
+    content = StreamObject()
+    drawing = b"q 2 w 0 0 0 RG 0 0 1 rg 40 50 180 120 re B Q"
+    content._data = drawing
+    content[NameObject("/Length")] = NumberObject(len(drawing))
+    page[NameObject("/Contents")] = writer._add_object(content)
+
     with path.open("wb") as fh:
         writer.write(fh)
 
@@ -132,6 +206,7 @@ def _assert_pipeline_log(result) -> None:
     assert result.log[0].startswith("Load or receive parsed PdfDocument instance.")
     assert result.log[-1].startswith("Return success status and summary log")
     assert any("Extracted" in entry for entry in result.log), "Expected extraction details in log"
+    assert any("cross-reference" in entry.lower() for entry in result.log)
 
 
 @pytest.mark.parametrize("text", ["Hello PDF", "Multi\nLine PDF"])
@@ -161,6 +236,633 @@ def test_pdf_to_docx_conversion(tmp_path: Path, text: str) -> None:
     combined_text = " ".join(texts)
     for token in text.replace("\n", " ").split():
         assert token in combined_text
+
+
+def test_pdf_to_docx_encrypted_requires_password(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "encrypted.pdf"
+    _create_pdf(pdf_path, "Secret PDF", password="letmein")
+
+    with pytest.raises(ValueError, match="requires a password"):
+        convert_document(pdf_path, tmp_path / "encrypted.docx")
+
+
+def test_pdf_to_docx_encrypted_with_password(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "encrypted.pdf"
+    _create_pdf(pdf_path, "Secret PDF", password="letmein")
+
+    docx_path = tmp_path / "encrypted.docx"
+    options = ConversionOptions(password="letmein")
+    result = convert_document(pdf_path, docx_path, options=options)
+
+    assert result.output_path == docx_path.resolve()
+    assert result.page_count == 1
+    _assert_pipeline_log(result)
+
+
+def test_conversion_pipeline_records_cross_reference(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "xref.pdf"
+    _create_pdf(pdf_path, "CrossRef")
+
+    docx_path = tmp_path / "xref.docx"
+    context = ConversionContext()
+    pipeline = ConversionPipeline()
+    result = pipeline.run(pdf_path, docx_path, context=context)
+
+    assert result.output_path == docx_path.resolve()
+    assert context.resources.get("pdf_startxref", 0) > 0
+    assert context.resources.get("pdf_cross_reference_kind") in {"table", "stream"}
+    trailer_info = context.resources.get("pdf_trailer_info")
+    assert trailer_info
+    assert trailer_info.get("root_ref") is not None
+    assert context.resources.get("pdf_trailer")
+    assert context.resources.get("pdf_trailer_dereferenced")
+    if trailer_info.get("size") is not None:
+        assert context.resources.get("pdf_object_count") == trailer_info.get("size")
+    catalog = context.resources.get("pdf_catalog")
+    assert catalog
+    assert catalog.get("/Type") == "/Catalog"
+    pages_tree = context.resources.get("pdf_pages_tree")
+    assert pages_tree
+    assert pages_tree.get("/Type") == "/Pages"
+    pages_summary = context.resources.get("pdf_pages_tree_summary")
+    assert pages_summary
+    assert pages_summary["type"] == "/Pages"
+    assert pages_summary.get("count") == 1
+    assert pages_summary.get("kids")
+    assert context.resources.get("pdf_pages_ref")
+    assert context.resources.get("pdf_pages_count") == 1
+    leaf_entries = context.resources.get("pdf_pages_leaves")
+    assert leaf_entries
+    assert context.resources.get("pdf_pages_leaf_count") == len(leaf_entries)
+    page_refs = context.resources.get("pdf_page_refs")
+    assert page_refs
+    assert page_refs[0] == leaf_entries[0].get("ref")
+
+
+def test_conversion_pipeline_prepares_page_buffers(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "buffers.pdf"
+    _create_pdf(pdf_path, "Buffer stage")
+
+    docx_path = tmp_path / "buffers.docx"
+    context = ConversionContext()
+    pipeline = ConversionPipeline()
+    pipeline.run(pdf_path, docx_path, context=context)
+
+    iteration_plan = context.resources.get("page_iteration_plan")
+    assert iteration_plan == [0]
+
+    dictionaries = context.resources.get("page_dictionaries")
+    assert isinstance(dictionaries, list)
+    assert len(dictionaries) == 1
+    page_dict = dictionaries[0]
+    assert hasattr(page_dict, "get")
+    assert str(page_dict.get("/Type")) == "/Page"
+
+    iteration_details = context.resources.get("page_iteration_details")
+    assert isinstance(iteration_details, list)
+    assert len(iteration_details) == 1
+    iteration_entry = iteration_details[0]
+    assert iteration_entry.get("page_number") == 0
+    assert iteration_entry.get("ordinal") == 0
+    assert iteration_entry.get("width") > 0
+    assert iteration_entry.get("height") > 0
+    assert iteration_entry.get("dictionary_type") == "/Page"
+    assert iteration_entry.get("rotation") == 0
+    assert iteration_entry.get("media_width") == pytest.approx(200.0)
+    assert iteration_entry.get("media_height") == pytest.approx(200.0)
+    assert iteration_entry.get("media_box") == (0.0, 0.0, 200.0, 200.0)
+    assert iteration_entry.get("crop_box") is None
+
+    geometry_summaries = context.resources.get("page_geometry_summaries")
+    assert isinstance(geometry_summaries, list)
+    assert len(geometry_summaries) == 1
+    geometry_entry = geometry_summaries[0]
+    assert geometry_entry.get("page_number") == 0
+    assert geometry_entry.get("width") == pytest.approx(iteration_entry.get("width"))
+    assert geometry_entry.get("height") == pytest.approx(iteration_entry.get("height"))
+    assert geometry_entry.get("rotation") == iteration_entry.get("rotation")
+
+    page_dimensions = context.resources.get("page_dimensions")
+    assert isinstance(page_dimensions, dict)
+    assert 0 in page_dimensions
+    dimension_entry = page_dimensions[0]
+    assert dimension_entry.get("width") == pytest.approx(iteration_entry.get("width"))
+    assert dimension_entry.get("height") == pytest.approx(iteration_entry.get("height"))
+    assert dimension_entry.get("rotation") == iteration_entry.get("rotation")
+
+    page_resources = context.resources.get("page_resources")
+    assert isinstance(page_resources, dict)
+    assert 0 in page_resources
+    resource_entry = page_resources[0]
+    assert isinstance(resource_entry, dict)
+    assert "/Font" in resource_entry
+    fonts_mapping = resource_entry.get("/Font")
+    assert isinstance(fonts_mapping, dict)
+    assert "/F1" in fonts_mapping
+
+    resource_summaries = context.resources.get("page_resource_summaries")
+    assert isinstance(resource_summaries, list)
+    assert len(resource_summaries) == 1
+    resource_summary = resource_summaries[0]
+    assert resource_summary.get("page_number") == 0
+    assert resource_summary.get("font_count") >= 1
+    fonts_summary = resource_summary.get("fonts")
+    assert isinstance(fonts_summary, list) and fonts_summary
+    font_entry = fonts_summary[0]
+    assert font_entry.get("name") in {"/F1", "F1"}
+    assert font_entry.get("base_font") in {"/Helvetica", "Helvetica"}
+
+    dictionary_refs = context.resources.get("page_dictionary_refs")
+    assert isinstance(dictionary_refs, list)
+    assert len(dictionary_refs) == 1
+    assert dictionary_refs[0] == iteration_entry.get("object_ref")
+
+    plan = context.resources.get("page_content_plan")
+    assert plan == [0]
+
+    image_plan = context.resources.get("page_image_plan")
+    assert image_plan == [0]
+
+    vector_plan = context.resources.get("page_vector_plan")
+    assert vector_plan == [0]
+
+    image_summaries = context.resources.get("page_image_summaries")
+    assert isinstance(image_summaries, list)
+    assert len(image_summaries) == 1
+    image_summary = image_summaries[0]
+    assert image_summary.get("page_number") == 0
+    assert image_summary.get("image_count") == len(image_summary.get("images", ()))
+    assert isinstance(image_summary.get("images"), list)
+
+    image_cache = context.resources.get("page_image_cache")
+    assert isinstance(image_cache, dict)
+    assert 0 in image_cache
+    cached_images = image_cache[0]
+    assert isinstance(cached_images, list)
+
+    vector_summaries = context.resources.get("page_vector_summaries")
+    assert isinstance(vector_summaries, list)
+    assert len(vector_summaries) == 1
+    vector_summary = vector_summaries[0]
+    assert vector_summary.get("page_number") == 0
+    assert vector_summary.get("line_count") == 0
+    assert vector_summary.get("path_count") == 0
+
+    vector_cache = context.resources.get("page_vector_cache")
+    assert isinstance(vector_cache, dict)
+    assert 0 in vector_cache
+    cached_vectors = vector_cache[0]
+    assert isinstance(cached_vectors, dict)
+    assert isinstance(cached_vectors.get("lines"), list)
+    assert isinstance(cached_vectors.get("paths"), list)
+
+    text_plan = context.resources.get("page_text_plan")
+    assert text_plan == [0]
+
+    parser_plan = context.resources.get("content_stream_parser_plan")
+    assert isinstance(parser_plan, list)
+    assert len(parser_plan) == 1
+    parser_entry = parser_plan[0]
+    assert parser_entry.get("page_number") == 0
+    assert parser_entry.get("ordinal") == 0
+    initial_state = parser_entry.get("initial_state")
+    assert isinstance(initial_state, dict)
+    assert initial_state.get("ctm") == (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    assert initial_state.get("text_matrix") == (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    assert initial_state.get("font_ref") is None
+    default_state = context.resources.get("content_stream_default_state")
+    assert isinstance(default_state, dict)
+    assert default_state == initial_state
+
+    buffers = context.resources.get("page_content_buffers")
+    assert isinstance(buffers, list)
+    assert len(buffers) == 1
+    buffer_entry = buffers[0]
+    assert buffer_entry.get("page_number") == 0
+    assert buffer_entry.get("ordinal") == 0
+    assert isinstance(buffer_entry.get("glyphs"), list)
+    assert isinstance(buffer_entry.get("images"), list)
+    assert isinstance(buffer_entry.get("lines"), list)
+    assert isinstance(buffer_entry.get("paths"), list)
+    dimensions = buffer_entry.get("dimensions")
+    assert isinstance(dimensions, dict)
+    assert dimensions.get("width") == pytest.approx(iteration_entry.get("width"))
+    assert dimensions.get("height") == pytest.approx(iteration_entry.get("height"))
+    assert dimensions.get("rotation") == iteration_entry.get("rotation")
+    assert dimensions.get("media_box") == iteration_entry.get("media_box")
+    assert "crop_box" not in dimensions or dimensions.get("crop_box") is None
+    assert buffer_entry.get("glyph_count") == len(buffer_entry.get("glyphs", ()))
+    assert buffer_entry.get("image_count") == len(buffer_entry.get("images", ()))
+    assert buffer_entry.get("line_count") == len(buffer_entry.get("lines", ()))
+    assert buffer_entry.get("path_count") == len(buffer_entry.get("paths", ()))
+
+    content_streams = context.resources.get("page_content_streams")
+    assert isinstance(content_streams, dict)
+    assert 0 in content_streams
+    streams = content_streams[0]
+    assert isinstance(streams, list)
+    assert streams
+    assert any(b"Buffer stage" in chunk for chunk in streams)
+
+    content_bytes = context.resources.get("page_content_bytes")
+    assert isinstance(content_bytes, dict)
+    assert 0 in content_bytes
+    combined_bytes = content_bytes[0]
+    assert isinstance(combined_bytes, (bytes, bytearray))
+    combined_bytes = bytes(combined_bytes)
+    assert b"Buffer stage" in combined_bytes
+
+    stream_summaries = context.resources.get("page_content_stream_summaries")
+    assert isinstance(stream_summaries, list)
+    assert len(stream_summaries) == 1
+    stream_summary = stream_summaries[0]
+    assert stream_summary.get("page_number") == 0
+    assert stream_summary.get("stream_count") == len(streams)
+    assert stream_summary.get("bytes") == len(combined_bytes)
+    lengths = stream_summary.get("stream_lengths")
+    assert isinstance(lengths, list)
+    assert lengths and lengths[0] == len(streams[0])
+    assert stream_summary.get("has_content")
+
+    command_plan = context.resources.get("page_content_command_plan")
+    assert command_plan == [0]
+
+    command_lookup = context.resources.get("page_content_commands")
+    assert isinstance(command_lookup, dict)
+    assert 0 in command_lookup
+    command_entries = command_lookup[0]
+    assert isinstance(command_entries, list) and command_entries
+    assert command_entries[0].get("operator") == "BT"
+    assert command_entries[-1].get("operator") == "ET"
+    assert any(entry.get("category") == "text_show" for entry in command_entries)
+
+    state_change_map = context.resources.get("page_text_state_changes")
+    assert isinstance(state_change_map, dict)
+    assert 0 in state_change_map
+    state_changes = state_change_map[0]
+    assert isinstance(state_changes, list) and state_changes
+    font_changes = [entry for entry in state_changes if entry.get("operator") == "Tf"]
+    assert font_changes and font_changes[0].get("font_name") in {"Helvetica", "/Helvetica"}
+    assert font_changes[0].get("font_size") == pytest.approx(12.0)
+    position_changes = [
+        entry
+        for entry in state_changes
+        if entry.get("operator") in {"Td", "TD", "Tm"}
+    ]
+    assert position_changes
+    first_position = position_changes[0].get("position")
+    assert isinstance(first_position, tuple) and len(first_position) == 2
+    assert isinstance(first_position[0], float)
+    assert isinstance(first_position[1], float)
+
+    command_summaries = context.resources.get("page_content_command_summaries")
+    assert isinstance(command_summaries, list) and len(command_summaries) == 1
+    command_summary_entry = command_summaries[0]
+    assert command_summary_entry.get("page_number") == 0
+    assert command_summary_entry.get("command_count") == len(command_entries)
+    assert command_summary_entry.get("text_show_commands", 0) >= 1
+    assert command_summary_entry.get("recognised") == command_summary_entry.get("command_count") - command_summary_entry.get("unknown_commands", 0)
+    assert command_summary_entry.get("text_state_change_count") == len(state_changes)
+    assert command_summary_entry.get("font_state_changes", 0) == len(font_changes)
+    assert command_summary_entry.get("position_state_changes", 0) >= len(position_changes)
+
+    assert buffer_entry.get("content_stream_count") == len(streams)
+    assert buffer_entry.get("content_length") == len(combined_bytes)
+    buffer_lengths = buffer_entry.get("content_stream_lengths")
+    assert isinstance(buffer_lengths, list)
+    assert buffer_lengths == lengths
+    assert buffer_entry.get("has_content")
+
+    assert buffer_entry.get("content_command_count") == len(command_entries)
+    assert isinstance(buffer_entry.get("content_commands"), list)
+    assert buffer_entry.get("content_commands") == command_entries
+    buffer_command_summary = buffer_entry.get("content_command_summary")
+    assert isinstance(buffer_command_summary, dict)
+    assert buffer_command_summary.get("command_count") == len(command_entries)
+    assert buffer_entry.get("text_state_change_count") == len(state_changes)
+    assert buffer_entry.get("font_state_changes") == len(font_changes)
+    assert buffer_entry.get("position_state_changes") >= len(position_changes)
+    assert buffer_entry.get("text_state_changes") == state_changes
+
+    text_buffers = context.resources.get("page_text_buffers")
+    assert isinstance(text_buffers, list)
+    assert len(text_buffers) == 1
+    text_entry = text_buffers[0]
+    assert text_entry.get("page_number") == 0
+    assert text_entry.get("ordinal") == 0
+    assert isinstance(text_entry.get("glyphs"), list)
+    assert text_entry.get("glyph_count") == len(text_entry.get("glyphs", ()))
+    assert any("Buffer" in glyph for glyph in text_entry.get("glyphs", []))
+    text_elements = text_entry.get("text_elements")
+    assert isinstance(text_elements, list)
+    assert text_elements
+    assert text_entry.get("text_element_count") == len(text_elements)
+    element_sample = text_elements[0]
+    assert element_sample.get("text")
+    assert isinstance(element_sample.get("x"), float)
+    assert isinstance(element_sample.get("y"), float)
+    assert element_sample.get("font_name") in {"Helvetica", "/Helvetica", "F1", None}
+    assert element_sample.get("font_size") == pytest.approx(12.0)
+    assert element_sample.get("color")
+    assert element_sample.get("vertical") is False
+    fonts_meta = text_entry.get("fonts")
+    assert isinstance(fonts_meta, list)
+    assert text_entry.get("font_count") == len(fonts_meta)
+    font_maps = text_entry.get("font_maps")
+    assert isinstance(font_maps, dict)
+    font_map_entry = font_maps.get("/F1") or font_maps.get("F1")
+    assert isinstance(font_map_entry, dict)
+    assert "has_translation" in font_map_entry
+
+    font_summaries = context.resources.get("page_font_summaries")
+    assert isinstance(font_summaries, list)
+    assert len(font_summaries) == 1
+    font_summary = font_summaries[0]
+    assert font_summary.get("page_number") == 0
+    assert font_summary.get("font_count") >= 1
+
+    text_objects = text_entry.get("text_objects")
+    assert isinstance(text_objects, list)
+    text_summary = context.resources.get("page_text_summary")
+    assert isinstance(text_summary, list) and text_summary
+    text_summary_entry = text_summary[0]
+    assert text_summary_entry.get("text_objects") == len(text_objects)
+    object_resources = context.resources.get("page_text_objects")
+    assert isinstance(object_resources, list) and object_resources
+    assert object_resources[0].get("objects") == text_objects
+
+    translation_maps = context.resources.get("page_font_translation_maps")
+    assert isinstance(translation_maps, dict)
+    assert 0 in translation_maps
+    assert isinstance(translation_maps[0], dict)
+
+    assert text_summary_entry.get("page_number") == 0
+    assert text_summary_entry.get("glyphs") == text_entry.get("glyph_count")
+    assert text_summary_entry.get("text_elements") == text_entry.get("text_element_count")
+
+    element_resources = context.resources.get("page_text_elements")
+    assert isinstance(element_resources, list)
+    assert len(element_resources) == 1
+    element_entry = element_resources[0]
+    assert element_entry.get("page_number") == 0
+    assert element_entry.get("ordinal") == 0
+    assert element_entry.get("elements") == text_elements
+
+    summary = context.resources.get("page_content_summary")
+    assert isinstance(summary, list) and len(summary) == 1
+    summary_entry = summary[0]
+    assert summary_entry.get("page_number") == 0
+    assert summary_entry.get("glyphs") == buffer_entry.get("glyph_count")
+    assert summary_entry.get("images") == buffer_entry.get("image_count")
+    assert summary_entry.get("commands") == len(command_entries)
+    assert summary_entry.get("text_state_changes") == buffer_entry.get("text_state_change_count")
+
+    state_summaries = context.resources.get("page_content_states")
+    assert isinstance(state_summaries, list) and len(state_summaries) == 1
+    state_entry = state_summaries[0]
+    assert state_entry.get("page_number") == 0
+    assert state_entry.get("text_objects", 0) >= 1
+    assert state_entry.get("graphics_stack_depth") == 1
+    assert state_entry.get("max_graphics_stack_depth", 0) >= 1
+    assert state_entry.get("font_name")
+    assert state_entry.get("fill_color") == (0.0, 0.0, 0.0)
+
+    interpreter_state = buffer_entry.get("content_stream_state")
+    assert interpreter_state == state_entry
+
+
+def test_conversion_pipeline_prepares_image_resources(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "image-buffers.pdf"
+    _create_pdf_with_image(pdf_path)
+
+    docx_path = tmp_path / "image-buffers.docx"
+    context = ConversionContext()
+    pipeline = ConversionPipeline()
+    pipeline.run(pdf_path, docx_path, context=context)
+
+    image_summaries = context.resources.get("page_image_summaries")
+    assert isinstance(image_summaries, list)
+    assert len(image_summaries) == 1
+    summary = image_summaries[0]
+    assert summary.get("image_count") == 1
+    placements = summary.get("images")
+    assert isinstance(placements, list) and len(placements) == 1
+    placement = placements[0]
+    assert placement.get("name") in {"Im1", "/Im1"}
+    bbox = placement.get("bbox")
+    assert bbox and pytest.approx(bbox[0]) == 50.0
+    assert pytest.approx(bbox[1]) == 60.0
+    assert pytest.approx(bbox[2]) == 250.0
+    assert pytest.approx(bbox[3]) == 260.0
+    assert placement.get("bytes") > 0
+
+    image_cache = context.resources.get("page_image_cache")
+    assert isinstance(image_cache, dict) and 0 in image_cache
+    cached_images = image_cache[0]
+    assert isinstance(cached_images, list) and len(cached_images) == 1
+    primitive_image = cached_images[0]
+    assert primitive_image.mime_type == "image/png"
+    assert pytest.approx(primitive_image.bbox.left) == 50.0
+    assert pytest.approx(primitive_image.bbox.bottom) == 60.0
+    assert pytest.approx(primitive_image.bbox.right) == 250.0
+    assert pytest.approx(primitive_image.bbox.top) == 260.0
+
+    buffers = context.resources.get("page_content_buffers")
+    assert isinstance(buffers, list) and buffers
+    buffer_entry = buffers[0]
+    assert buffer_entry.get("image_count") == 1
+    extracted_images = buffer_entry.get("images")
+    assert isinstance(extracted_images, list) and len(extracted_images) == 1
+    page_image = extracted_images[0]
+    assert isinstance(page_image, PageImage)
+    assert pytest.approx(page_image.bbox.left) == 50.0
+    assert pytest.approx(page_image.bbox.bottom) == 60.0
+    assert pytest.approx(page_image.bbox.right) == 250.0
+    assert pytest.approx(page_image.bbox.top) == 260.0
+    assert page_image.mime_type == "image/png"
+
+    content_summary = context.resources.get("page_content_summary")
+    assert isinstance(content_summary, list) and len(content_summary) == 1
+    summary_entry = content_summary[0]
+    assert summary_entry.get("images") == 1
+
+
+def test_conversion_pipeline_prepares_vector_resources(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "vector-buffers.pdf"
+    _create_pdf_with_vector_shapes(pdf_path)
+
+    docx_path = tmp_path / "vector-buffers.docx"
+    context = ConversionContext()
+    pipeline = ConversionPipeline()
+    pipeline.run(pdf_path, docx_path, context=context)
+
+    vector_plan = context.resources.get("page_vector_plan")
+    assert vector_plan == [0]
+
+    vector_summaries = context.resources.get("page_vector_summaries")
+    assert isinstance(vector_summaries, list) and len(vector_summaries) == 1
+    summary = vector_summaries[0]
+    assert summary.get("line_count") == 4
+    assert summary.get("path_count") == 1
+    line_samples = summary.get("line_samples")
+    assert isinstance(line_samples, list) and line_samples
+    sample_line = line_samples[0]
+    assert pytest.approx(sample_line["start"][0]) == 40.0
+    assert pytest.approx(sample_line["start"][1]) == 50.0
+    assert pytest.approx(sample_line["end"][0]) == 220.0
+    path_samples = summary.get("path_samples")
+    assert isinstance(path_samples, list) and path_samples
+    path_sample = path_samples[0]
+    assert path_sample.get("is_rectangle") is True
+    assert path_sample.get("subpaths") >= 1
+    assert path_sample.get("bbox") == pytest.approx((40.0, 50.0, 220.0, 170.0))
+
+    vector_cache = context.resources.get("page_vector_cache")
+    assert isinstance(vector_cache, dict) and 0 in vector_cache
+    cache_entry = vector_cache[0]
+    assert isinstance(cache_entry, dict)
+    cached_lines = cache_entry.get("lines")
+    cached_paths = cache_entry.get("paths")
+    assert isinstance(cached_lines, list) and len(cached_lines) == 4
+    assert isinstance(cached_paths, list) and len(cached_paths) == 1
+
+    buffers = context.resources.get("page_content_buffers")
+    assert isinstance(buffers, list) and buffers
+    buffer_entry = buffers[0]
+    assert buffer_entry.get("line_count") == 4
+    assert buffer_entry.get("path_count") == 1
+    extracted_lines = buffer_entry.get("lines")
+    extracted_paths = buffer_entry.get("paths")
+    assert isinstance(extracted_lines, list) and len(extracted_lines) == 4
+    assert isinstance(extracted_lines[0], LineSegment)
+    assert isinstance(extracted_paths, list) and len(extracted_paths) == 1
+    assert isinstance(extracted_paths[0], VectorPath)
+
+
+def test_text_extraction_handles_spacing_and_newlines(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "spacing.pdf"
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=300)
+
+    font_dict = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font_dict)
+    resources = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})})
+    page[NameObject("/Resources")] = resources
+
+    content = (
+        "BT "
+        "/F1 12 Tf "
+        "72 200 Td "
+        "(Hello) Tj "
+        "0 -18 Td "
+        "(World) Tj "
+        "18 0 Td "
+        "[(Spaced) -600 (Word)] TJ "
+        "T* "
+        "(Next) Tj "
+        "ET"
+    ).encode("utf-8")
+    stream = StreamObject()
+    stream[NameObject("/Length")] = NumberObject(len(content))
+    stream._data = content
+    stream_ref = writer._add_object(stream)
+    page[NameObject("/Contents")] = stream_ref
+
+    with pdf_path.open("wb") as handle:
+        writer.write(handle)
+
+    docx_path = tmp_path / "spacing.docx"
+    context = ConversionContext()
+    pipeline = ConversionPipeline()
+    pipeline.run(pdf_path, docx_path, context=context)
+
+    text_buffers = context.resources.get("page_text_buffers")
+    assert isinstance(text_buffers, list)
+    assert text_buffers
+    text_elements = text_buffers[0].get("text_elements")
+    assert isinstance(text_elements, list) and text_elements
+    texts = [element.get("text", "") for element in text_elements]
+
+    assert any(entry.startswith("Hello") for entry in texts)
+    assert any(entry.startswith("\nWorld") for entry in texts)
+    assert any(entry.startswith(" Spaced") for entry in texts)
+    assert any(entry.startswith(" Word") for entry in texts)
+    assert any(entry.startswith("\nNext") for entry in texts)
+
+
+def test_text_extraction_records_text_objects(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "text-objects.pdf"
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=300)
+
+    font_dict = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font_dict)
+    resources = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})})
+    page[NameObject("/Resources")] = resources
+
+    content = (
+        "BT "
+        "/F1 12 Tf "
+        "72 220 Td "
+        "(First) Tj "
+        "(Line) Tj "
+        "ET "
+        "BT "
+        "/F1 12 Tf "
+        "72 200 Td "
+        "[(Second) -250 (Line)] TJ "
+        "ET"
+    ).encode("utf-8")
+    stream = StreamObject()
+    stream[NameObject("/Length")] = NumberObject(len(content))
+    stream._data = content
+    stream_ref = writer._add_object(stream)
+    page[NameObject("/Contents")] = stream_ref
+
+    with pdf_path.open("wb") as handle:
+        writer.write(handle)
+
+    docx_path = tmp_path / "text-objects.docx"
+    context = ConversionContext()
+    pipeline = ConversionPipeline()
+    pipeline.run(pdf_path, docx_path, context=context)
+
+    text_buffers = context.resources.get("page_text_buffers")
+    assert isinstance(text_buffers, list) and text_buffers
+    text_entry = text_buffers[0]
+    elements = text_entry.get("text_elements")
+    assert isinstance(elements, list) and len(elements) >= 3
+    text_objects = text_entry.get("text_objects")
+    assert isinstance(text_objects, list) and len(text_objects) == 2
+
+    first_object = text_objects[0]
+    assert first_object.get("text_object") == 0
+    first_indices = list(first_object.get("fragment_ordinals", ()))
+    assert first_indices and all(elements[index]["text_object"] == 0 for index in first_indices)
+
+    second_object = text_objects[1]
+    assert second_object.get("text_object") == 1
+    second_indices = list(second_object.get("fragment_ordinals", ()))
+    assert second_indices and all(elements[index]["text_object"] == 1 for index in second_indices)
+
+    ordinals = [element.get("ordinal") for element in elements]
+    assert ordinals == list(range(len(elements)))
+
+    object_resources = context.resources.get("page_text_objects")
+    assert isinstance(object_resources, list)
+    assert any(entry.get("objects") == text_objects for entry in object_resources)
 
 
 def test_pdf_document_primitives_conversion(tmp_path: Path) -> None:
@@ -734,39 +1436,8 @@ def test_image_relationship_written(tmp_path: Path) -> None:
 
 
 def test_pdf_reader_flate_image_extraction(tmp_path: Path) -> None:
-    import zlib
-
-    writer = PdfWriter()
-    page = writer.add_blank_page(width=300, height=300)
-
-    raw = bytes([255, 0, 0] * 4)
-    encoded = zlib.compress(raw)
-    image_stream = StreamObject()
-    image_stream.update(
-        {
-            NameObject("/Type"): NameObject("/XObject"),
-            NameObject("/Subtype"): NameObject("/Image"),
-            NameObject("/Width"): NumberObject(2),
-            NameObject("/Height"): NumberObject(2),
-            NameObject("/ColorSpace"): NameObject("/DeviceRGB"),
-            NameObject("/BitsPerComponent"): NumberObject(8),
-            NameObject("/Filter"): NameObject("/FlateDecode"),
-        }
-    )
-    image_stream._data = encoded
-    image_ref = writer._add_object(image_stream)
-
-    resources = DictionaryObject({NameObject("/XObject"): DictionaryObject({NameObject("/Im1"): image_ref})})
-    page[NameObject("/Resources")] = resources
-
-    content = StreamObject()
-    content._data = b"q 200 0 0 200 50 60 cm /Im1 Do Q"
-    content[NameObject("/Length")] = NumberObject(len(content._data))
-    page[NameObject("/Contents")] = writer._add_object(content)
-
     pdf_path = tmp_path / "with-image.pdf"
-    with pdf_path.open("wb") as fh:
-        writer.write(fh)
+    _create_pdf_with_image(pdf_path)
 
     docx_path = tmp_path / "with-image.docx"
     convert_document(pdf_path, docx_path)

@@ -27,6 +27,7 @@ class ConversionOptions:
     include_outline_toc: bool = True
     generate_toc_field: bool = True
     footnotes_as_endnotes: bool = False
+    password: str | None = None
 
 
 @dataclass(slots=True)

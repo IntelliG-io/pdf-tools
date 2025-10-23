@@ -10,6 +10,7 @@ retaining access to the underlying reader for advanced consumers.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 import re
 from typing import Any, Iterable, Mapping, Sequence
@@ -105,6 +106,17 @@ class ParsedDocument:
 _WHITESPACE = b"\x00\t\n\r\f "
 
 
+def _decode_be_integer(buffer: bytes) -> int:
+    """Decode a big-endian integer from ``buffer`` handling empty segments."""
+
+    if not buffer:
+        return 0
+    value = 0
+    for byte in buffer:
+        value = (value << 8) | byte
+    return value
+
+
 def _as_bytes(obj: object) -> bytes:
     if isinstance(obj, bytes):
         return obj
@@ -171,6 +183,19 @@ class PDFParser:
         self._reader: PdfReader | None = None
         self._raw_bytes: bytes | None = None
         self._parsed: ParsedDocument | None = None
+        self._startxref: int | None = None
+        self._xref_kind: str | None = None
+        self._cross_reference_cache: (
+            tuple[dict[tuple[int, int], int], tuple[DictionaryObject, ...]]
+            | None
+        ) = None
+        self._trailer_info: dict[str, Any] | None = None
+        self._catalog_info: dict[str, Any] | None = None
+        self._catalog_pages_node: DictionaryObject | None = None
+        self._catalog_pages_ref: tuple[int, int] | None = None
+        self._page_nodes_cache: (
+            tuple[tuple[DictionaryObject, tuple[int, int] | None], ...] | None
+        ) = None
         if preload:
             self.load()
 
@@ -216,11 +241,12 @@ class PDFParser:
 
         raw_bytes = self._load_bytes()
         version = self._detect_version(raw_bytes)
-        startxref = self._locate_startxref(raw_bytes)
+        startxref, _ = self.locate_cross_reference()
 
         reader = self.reader
 
         object_offsets = self._build_object_offsets(reader, raw_bytes, startxref)
+        trailer_info = self.read_trailer()
         resolver = ObjectResolver(reader=reader, offsets=object_offsets)
 
         info_dict = self._extract_info(reader)
@@ -228,11 +254,12 @@ class PDFParser:
         metadata_raw = _merge_dicts(info_dict, xmp_dict)
         metadata = {key: str(value) for key, value in metadata_raw.items()}
 
-        trailer = self._to_python(reader.trailer, dereference=True)
-        root_obj = reader.trailer.get(NameObject("/Root"))
-        root = self._to_python(root_obj, dereference=True)
+        trailer = trailer_info.get("entries_dereferenced") or {}
+        catalog_info = self.read_document_catalog()
+        root = catalog_info.get("catalog", {})
 
-        pages = self._build_pages(reader, raw_bytes, object_offsets)
+        page_nodes = self._collect_page_nodes()
+        pages = self._build_pages(raw_bytes, object_offsets, page_nodes)
 
         document = ParsedDocument(
             path=self.source,
@@ -248,6 +275,24 @@ class PDFParser:
         )
         self._parsed = document
         return document
+
+    def locate_cross_reference(self) -> tuple[int, str]:
+        """Locate the cross-reference data and return its offset and kind."""
+
+        if self._startxref is not None and self._xref_kind is not None:
+            return self._startxref, self._xref_kind
+
+        raw_bytes = self._load_bytes()
+        startxref = self._locate_startxref(raw_bytes)
+        view = raw_bytes[startxref : startxref + 16]
+        if view.startswith(b"xref"):
+            kind = "table"
+        else:
+            kind = "stream"
+
+        self._startxref = startxref
+        self._xref_kind = kind
+        return startxref, kind
 
     # -- Internal helpers ----------------------------------------------------
 
@@ -288,8 +333,15 @@ class PDFParser:
         data: bytes,
         startxref: int,
     ) -> dict[tuple[int, int], int]:
-        offsets = self._parse_xref_tables(data, startxref)
+        offsets, _ = self._parse_cross_reference(reader, data, startxref)
         if offsets:
+            # Supplement any missing entries (such as compressed object streams)
+            # with the offsets known to PyPDF.  This keeps the mapping exhaustive
+            # while still preferring the offsets we parsed directly from the
+            # cross-reference sections.
+            reader_offsets = self._offsets_from_reader(reader)
+            for key, value in reader_offsets.items():
+                offsets.setdefault(key, value)
             return offsets
 
         reader_offsets = self._offsets_from_reader(reader)
@@ -341,21 +393,429 @@ class PDFParser:
             pass
         return inferred
 
-    def _parse_xref_tables(self, data: bytes, startxref: int) -> dict[tuple[int, int], int]:
+    def read_trailer(self) -> dict[str, Any]:
+        """Parse and cache the PDF trailer dictionary."""
+
+        if self._trailer_info is not None:
+            return dict(self._trailer_info)
+
+        raw_bytes = self._load_bytes()
+        startxref, _ = self.locate_cross_reference()
+        reader = self.reader
+        _, trailers = self._parse_cross_reference(reader, raw_bytes, startxref)
+
+        trailer_dict: DictionaryObject | None = None
+        for candidate in trailers:
+            if isinstance(candidate, DictionaryObject):
+                trailer_dict = candidate
+                break
+
+        if trailer_dict is None:
+            try:
+                trailer_dict = reader.trailer  # type: ignore[assignment]
+            except Exception:
+                trailer_dict = None
+
+        entries: dict[str, Any] = {}
+        entries_dereferenced: dict[str, Any] = {}
+        root_ref: tuple[int, int] | None = None
+        size: int | None = None
+        document_id: Any | None = None
+        hybrid_offset: int | None = None
+
+        if isinstance(trailer_dict, DictionaryObject):
+            for key, value in trailer_dict.items():
+                name = str(key)
+                entries[name] = self._to_python(value, dereference=False)
+                entries_dereferenced[name] = self._to_python(value, dereference=True)
+
+            root_obj = trailer_dict.get(NameObject("/Root"))
+            if isinstance(root_obj, IndirectObject):
+                root_ref = (root_obj.idnum, root_obj.generation)
+
+            size_obj = trailer_dict.get(NameObject("/Size"))
+            if isinstance(size_obj, (int, float)):
+                size = int(size_obj)
+
+            id_obj = trailer_dict.get(NameObject("/ID"))
+            id_value = self._to_python(id_obj, dereference=False)
+            if isinstance(id_value, list):
+                document_id = id_value
+
+            xref_stream_obj = trailer_dict.get(NameObject("/XRefStm"))
+            if isinstance(xref_stream_obj, (int, float)):
+                hybrid_offset = int(xref_stream_obj)
+            elif isinstance(xref_stream_obj, IndirectObject):
+                try:
+                    resolved = xref_stream_obj.get_object()
+                except Exception:
+                    resolved = None
+                if isinstance(resolved, (int, float)):
+                    hybrid_offset = int(resolved)
+
+        sources: list[str] = []
+        if trailers:
+            for candidate in trailers:
+                sources.append(
+                    "xref_stream" if isinstance(candidate, StreamObject) else "xref_table"
+                )
+
+        trailer_info = {
+            "entries": entries,
+            "entries_dereferenced": entries_dereferenced,
+            "root_ref": root_ref,
+            "size": size,
+            "document_id": document_id,
+            "hybrid_xref_offset": hybrid_offset,
+        }
+        if sources:
+            trailer_info["sources"] = sources
+
+        self._trailer_info = dict(trailer_info)
+        return dict(trailer_info)
+
+    def read_document_catalog(self) -> dict[str, Any]:
+        """Load the PDF document catalog and related page tree metadata."""
+
+        if self._catalog_info is not None:
+            return dict(self._catalog_info)
+
+        trailer_info = self.read_trailer()
+        root_ref = trailer_info.get("root_ref")
+
+        reader = self.reader
+        catalog_obj: DictionaryObject | None = None
+
+        if isinstance(root_ref, tuple) and len(root_ref) == 2:
+            try:
+                catalog_candidate = IndirectObject(root_ref[0], root_ref[1], reader)
+                resolved = catalog_candidate.get_object()
+            except Exception:
+                resolved = None
+            if isinstance(resolved, DictionaryObject):
+                catalog_obj = resolved
+
+        if catalog_obj is None:
+            try:
+                catalog_candidate = reader.trailer.get(NameObject("/Root"))
+            except Exception:
+                catalog_candidate = None
+
+            resolved = self._resolve(catalog_candidate)
+            catalog_obj = resolved if isinstance(resolved, DictionaryObject) else None
+
+        if catalog_obj is None:
+            raise ValueError("Unable to locate document catalog from trailer")
+
+        pages_ref: tuple[int, int] | None = None
+        pages_obj: DictionaryObject | None = None
+        pages_entry = catalog_obj.get(NameObject("/Pages"))
+        if isinstance(pages_entry, IndirectObject):
+            pages_ref = (pages_entry.idnum, pages_entry.generation)
+            try:
+                resolved_pages = pages_entry.get_object()
+            except Exception:
+                resolved_pages = None
+            if isinstance(resolved_pages, DictionaryObject):
+                pages_obj = resolved_pages
+        elif isinstance(pages_entry, DictionaryObject):
+            pages_obj = pages_entry
+
+        if pages_obj is None:
+            raise ValueError("Document catalog is missing a /Pages dictionary")
+
+        pages_type_obj = self._resolve(pages_obj.get(NameObject("/Type")))
+        pages_type = str(pages_type_obj) if pages_type_obj is not None else None
+        if pages_type and pages_type != "/Pages":
+            raise ValueError(
+                "Document catalog /Pages entry does not reference a /Pages node"
+            )
+
+        self._catalog_pages_node = pages_obj
+        self._catalog_pages_ref = pages_ref
+        self._page_nodes_cache = None
+
+        page_nodes = self._enumerate_pages_node(pages_obj, ref=pages_ref)
+        self._page_nodes_cache = tuple(page_nodes)
+
+        catalog_info = {
+            "catalog": self._to_python(catalog_obj, dereference=True),
+            "catalog_ref": root_ref,
+        }
+
+        if pages_ref is not None:
+            catalog_info["pages_ref"] = pages_ref
+        catalog_info["pages"] = self._to_python(pages_obj, dereference=True)
+
+        count_obj = self._resolve(pages_obj.get(NameObject("/Count")))
+        if isinstance(count_obj, (int, float)):
+            catalog_info["pages_count"] = int(count_obj)
+
+        catalog_info["pages_tree_summary"] = self._summarize_pages_node(
+            pages_obj,
+            ref=pages_ref,
+        )
+
+        catalog_info["pages_leaf_count"] = len(page_nodes)
+        catalog_info["pages_leaves"] = [
+            self._summarize_page_leaf(page_node, page_ref, index)
+            for index, (page_node, page_ref) in enumerate(page_nodes)
+        ]
+
+        self._catalog_info = dict(catalog_info)
+        return dict(catalog_info)
+
+    def _summarize_pages_node(
+        self,
+        node: DictionaryObject,
+        *,
+        ref: tuple[int, int] | None,
+        _seen_refs: set[tuple[int, int]] | None = None,
+        _seen_nodes: set[int] | None = None,
+    ) -> dict[str, Any]:
+        """Return a lightweight summary for a /Pages tree node."""
+
+        if _seen_refs is None:
+            _seen_refs = set()
+        if _seen_nodes is None:
+            _seen_nodes = set()
+
+        node_id = id(node)
+        if node_id in _seen_nodes:
+            summary: dict[str, Any] = {"type": "/Pages", "cycle": True}
+            if ref is not None:
+                summary["ref"] = ref
+            return summary
+        _seen_nodes.add(node_id)
+
+        type_obj = self._resolve(node.get(NameObject("/Type")))
+        type_name = str(type_obj) if type_obj is not None else None
+
+        summary = {"type": type_name or "/Pages"}
+        if ref is not None:
+            summary["ref"] = ref
+
+        count_obj = self._resolve(node.get(NameObject("/Count")))
+        if isinstance(count_obj, (int, float)):
+            summary["count"] = int(count_obj)
+
+        kids_obj = node.get(NameObject("/Kids"))
+        kids_resolved = self._resolve(kids_obj)
+        if isinstance(kids_resolved, ArrayObject):
+            children: list[dict[str, Any]] = []
+            for child in kids_resolved:
+                child_ref: tuple[int, int] | None = None
+                if isinstance(child, IndirectObject):
+                    child_ref = (child.idnum, child.generation)
+                    if child_ref in _seen_refs:
+                        children.append({"type": "circular", "ref": child_ref})
+                        continue
+                    _seen_refs.add(child_ref)
+                child_resolved = self._resolve(child)
+                if isinstance(child_resolved, DictionaryObject):
+                    child_type_obj = self._resolve(
+                        child_resolved.get(NameObject("/Type"))
+                    )
+                    child_type = str(child_type_obj) if child_type_obj is not None else None
+                    if child_type == "/Pages":
+                        children.append(
+                            self._summarize_pages_node(
+                                child_resolved,
+                                ref=child_ref,
+                                _seen_refs=_seen_refs,
+                                _seen_nodes=_seen_nodes,
+                            )
+                        )
+                    else:
+                        entry: dict[str, Any] = {"type": child_type or "Unknown"}
+                        if child_ref is not None:
+                            entry["ref"] = child_ref
+                        if child_type == "/Page":
+                            media_box = self._resolve_array(child_resolved.get(NameObject("/MediaBox")))
+                            if media_box is not None:
+                                entry["media_box"] = media_box
+                        children.append(entry)
+                else:
+                    entry = {"type": "Unknown"}
+                    if child_ref is not None:
+                        entry["ref"] = child_ref
+                    children.append(entry)
+            if children:
+                summary["kids"] = children
+                summary["kids_count"] = len(children)
+
+        return summary
+
+    def _summarize_page_leaf(
+        self,
+        page: DictionaryObject,
+        ref: tuple[int, int] | None,
+        index: int,
+    ) -> dict[str, Any]:
+        summary: dict[str, Any] = {"type": "/Page", "index": index}
+        if ref is not None:
+            summary["ref"] = ref
+
+        media_box = self._resolve_array(page.get(NameObject("/MediaBox")))
+        if media_box is not None:
+            summary["media_box"] = media_box
+
+        rotate = self._inherit_scalar(page, "/Rotate")
+        if rotate is not None:
+            summary["rotate"] = int(rotate)
+
+        return summary
+
+    def _enumerate_pages_node(
+        self,
+        node: DictionaryObject,
+        *,
+        ref: tuple[int, int] | None,
+        _seen_refs: set[tuple[int, int]] | None = None,
+        _seen_nodes: set[int] | None = None,
+    ) -> list[tuple[DictionaryObject, tuple[int, int] | None]]:
+        if _seen_refs is None:
+            _seen_refs = set()
+        if _seen_nodes is None:
+            _seen_nodes = set()
+
+        entries: list[tuple[DictionaryObject, tuple[int, int] | None]] = []
+        node_id = id(node)
+        if node_id in _seen_nodes:
+            return entries
+        _seen_nodes.add(node_id)
+
+        type_obj = self._resolve(node.get(NameObject("/Type")))
+        type_name = str(type_obj) if type_obj is not None else None
+
+        kids_obj = node.get(NameObject("/Kids"))
+        kids_resolved = self._resolve(kids_obj)
+
+        if type_name == "/Page" or (
+            type_name is None and not isinstance(kids_resolved, ArrayObject)
+        ):
+            entries.append((node, ref))
+            return entries
+
+        if not isinstance(kids_resolved, ArrayObject):
+            return entries
+
+        for child in kids_resolved:
+            child_ref: tuple[int, int] | None = None
+            if isinstance(child, IndirectObject):
+                child_ref = (child.idnum, child.generation)
+                if child_ref in _seen_refs:
+                    continue
+                _seen_refs.add(child_ref)
+
+            child_resolved = self._resolve(child)
+            if not isinstance(child_resolved, DictionaryObject):
+                continue
+
+            child_type_obj = self._resolve(child_resolved.get(NameObject("/Type")))
+            child_type = str(child_type_obj) if child_type_obj is not None else None
+            child_kids = self._resolve(child_resolved.get(NameObject("/Kids")))
+
+            if child_type == "/Pages" or (
+                child_type is None
+                and isinstance(child_kids, ArrayObject)
+            ):
+                entries.extend(
+                    self._enumerate_pages_node(
+                        child_resolved,
+                        ref=child_ref,
+                        _seen_refs=_seen_refs,
+                        _seen_nodes=_seen_nodes,
+                    )
+                )
+            elif child_type == "/Page" or child_type is None:
+                entries.append((child_resolved, child_ref))
+
+        return entries
+
+    def _collect_page_nodes(self) -> list[tuple[DictionaryObject, tuple[int, int] | None]]:
+        if self._page_nodes_cache is not None:
+            return [(node, ref) for node, ref in self._page_nodes_cache]
+
+        # Trigger catalog parsing to populate caches if needed.
+        self.read_document_catalog()
+
+        if self._page_nodes_cache is None:
+            raise ValueError("Document catalog is missing a /Pages hierarchy")
+
+        return [(node, ref) for node, ref in self._page_nodes_cache]
+
+    def _resolve_array(self, obj: Any) -> list[float] | None:
+        resolved = self._resolve(obj)
+        if isinstance(resolved, ArrayObject):
+            try:
+                return [float(item) for item in resolved]
+            except Exception:
+                return None
+        return None
+
+    def _parse_cross_reference(
+        self,
+        reader: PdfReader,
+        data: bytes,
+        startxref: int,
+    ) -> tuple[dict[tuple[int, int], int], list[DictionaryObject]]:
+        if self._cross_reference_cache is not None:
+            cached_offsets, cached_trailers = self._cross_reference_cache
+            return dict(cached_offsets), list(cached_trailers)
+
         if startxref < 0 or startxref >= len(data):
-            return {}
-        view = data[startxref:]
-        if not view.startswith(b"xref"):
-            # XRef stream or unsupported format; bail out.
-            return {}
+            self._cross_reference_cache = ({}, tuple())
+            return {}, []
 
         offsets: dict[tuple[int, int], int] = {}
-        index = startxref + len(b"xref")
-        index = _skip_ws(data, index)
+        trailers: list[DictionaryObject] = []
+        visited: set[int] = set()
+        next_offset: int | None = startxref
+
+        while next_offset is not None and next_offset not in visited:
+            visited.add(next_offset)
+            view = data[next_offset:]
+            if view.startswith(b"xref"):
+                section_offsets, prev, trailer_dict = self._parse_xref_table_section(
+                    reader, data, next_offset
+                )
+            else:
+                section_offsets, prev, trailer_dict = self._parse_xref_stream_section(
+                    reader, data, next_offset
+                )
+
+            for key, value in section_offsets.items():
+                # Later revisions override earlier ones; only record the first
+                # occurrence we encounter while walking ``startxref`` backwards.
+                offsets.setdefault(key, value)
+
+            if trailer_dict is not None:
+                trailers.append(trailer_dict)
+
+            if prev is None:
+                break
+            next_offset = int(prev)
+
+        self._cross_reference_cache = (dict(offsets), tuple(trailers))
+        return dict(offsets), list(trailers)
+
+    def _parse_xref_table_section(
+        self, reader: PdfReader, data: bytes, start: int
+    ) -> tuple[dict[tuple[int, int], int], int | None, DictionaryObject | None]:
+        offsets: dict[tuple[int, int], int] = {}
         length = len(data)
+        index = start + len(b"xref")
+        index = _skip_ws(data, index)
+
         while index < length:
             if data[index : index + 7] == b"trailer":
-                break
+                index += 7
+                index = _skip_ws(data, index)
+                dictionary_bytes, _ = self._extract_pdf_dictionary(data, index)
+                dictionary = self._decode_trailer_dictionary(reader, dictionary_bytes)
+                prev = self._parse_prev_from_dictionary(dictionary_bytes)
+                return offsets, prev, dictionary
             try:
                 start_obj, index = _read_int(data, index)
                 count, index = _read_int(data, index)
@@ -378,7 +838,147 @@ class PDFParser:
                 while index < length and data[index] in b"\r\n":
                     index += 1
             index = _skip_ws(data, index)
-        return offsets
+
+        return offsets, None, None
+
+    def _parse_xref_stream_section(
+        self,
+        reader: PdfReader,
+        data: bytes,
+        start: int,
+    ) -> tuple[dict[tuple[int, int], int], int | None, DictionaryObject | None]:
+        offsets: dict[tuple[int, int], int] = {}
+        view = data[start:]
+        header = re.match(rb"\s*(\d+)\s+(\d+)\s+obj", view)
+        if not header:
+            return offsets, None, None
+
+        obj_num = int(header.group(1))
+        generation = int(header.group(2))
+
+        try:
+            stream_obj = reader.get_object(IndirectObject(obj_num, generation, reader))
+        except Exception:
+            return offsets, None, None
+
+        if not isinstance(stream_obj, StreamObject):
+            return offsets, None, None
+
+        try:
+            decoded = stream_obj.get_data()  # type: ignore[call-arg]
+        except Exception:
+            raw_data = stream_obj._data  # type: ignore[attr-defined]
+            decoded = _as_bytes(raw_data)
+
+        widths_obj = stream_obj.get(NameObject("/W"))
+        if not isinstance(widths_obj, ArrayObject):
+            return offsets, self._parse_prev_from_dictionary(stream_obj), stream_obj
+        widths = [int(w) for w in widths_obj]
+        if len(widths) != 3:
+            return offsets, self._parse_prev_from_dictionary(stream_obj), stream_obj
+        entry_width = sum(widths)
+        if entry_width <= 0:
+            return offsets, self._parse_prev_from_dictionary(stream_obj), stream_obj
+
+        size_obj = stream_obj.get(NameObject("/Size"))
+        size = int(size_obj) if isinstance(size_obj, (int, float)) else 0
+
+        index_obj = stream_obj.get(NameObject("/Index"))
+        if isinstance(index_obj, ArrayObject) and len(index_obj) % 2 == 0:
+            subsections = [
+                (int(index_obj[i]), int(index_obj[i + 1]))
+                for i in range(0, len(index_obj), 2)
+            ]
+        else:
+            subsections = [(0, size)] if size else []
+
+        position = 0
+        for start_obj, count in subsections:
+            for i in range(count):
+                end = position + entry_width
+                if end > len(decoded):
+                    break
+                field1 = _decode_be_integer(decoded[position : position + widths[0]])
+                field2 = _decode_be_integer(
+                    decoded[position + widths[0] : position + widths[0] + widths[1]]
+                )
+                field3 = _decode_be_integer(decoded[position + widths[0] + widths[1] : end])
+                position = end
+
+                if field1 == 0:
+                    continue
+                if field1 == 1:
+                    offsets[(start_obj + i, field3)] = field2
+                elif field1 == 2:
+                    container = (field2, 0)
+                    container_offset = offsets.get(container)
+                    if container_offset is None:
+                        container_offset = _search_object_offset(data, container)
+                    if container_offset is not None:
+                        offsets[(start_obj + i, 0)] = container_offset
+            if position + entry_width > len(decoded):
+                break
+
+        prev = self._parse_prev_from_dictionary(stream_obj)
+        return offsets, prev, stream_obj
+
+    def _parse_prev_from_dictionary(self, dictionary: Any) -> int | None:
+        if isinstance(dictionary, (bytes, bytearray)):
+            prev_match = re.search(rb"/Prev\s+([0-9]+)", bytes(dictionary))
+            if prev_match:
+                return int(prev_match.group(1))
+            return None
+
+        if isinstance(dictionary, DictionaryObject):
+            candidate = dictionary.get(NameObject("/Prev"))
+            if isinstance(candidate, (int, float)):
+                return int(candidate)
+            if isinstance(candidate, IndirectObject):
+                try:
+                    resolved = candidate.get_object()
+                except Exception:
+                    return None
+                if isinstance(resolved, (int, float)):
+                    return int(resolved)
+            return None
+
+        return None
+
+    def _decode_trailer_dictionary(
+        self, reader: PdfReader, dictionary_bytes: bytes
+    ) -> DictionaryObject | None:
+        stream = BytesIO(dictionary_bytes)
+        try:
+            dictionary = DictionaryObject.read_from_stream(stream, reader)
+        except Exception:
+            return None
+        return dictionary
+
+    def _extract_pdf_dictionary(self, data: bytes, start: int) -> tuple[bytes, int]:
+        depth = 0
+        index = start
+        length = len(data)
+        while index + 1 < length:
+            if data[index : index + 2] == b"<<":
+                depth += 1
+                index += 2
+                break
+            index += 1
+
+        begin = index - 2
+        while index + 1 < length and depth > 0:
+            if data[index : index + 2] == b"<<":
+                depth += 1
+                index += 2
+                continue
+            if data[index : index + 2] == b">>":
+                depth -= 1
+                index += 2
+                if depth == 0:
+                    return data[begin:index], index
+                continue
+            index += 1
+        return data[begin:index], index
 
     def _offsets_from_reader(self, reader: PdfReader) -> dict[tuple[int, int], int]:
         """Reuse the internal pypdf cross reference tables when available."""
@@ -532,24 +1132,26 @@ class PDFParser:
 
     def _build_pages(
         self,
-        reader: PdfReader,
         data: bytes,
         offsets: dict[tuple[int, int], int],
+        page_nodes: Sequence[tuple[DictionaryObject, tuple[int, int] | None]],
     ) -> list[ParsedPage]:
         pages: list[ParsedPage] = []
-        for index, page in enumerate(reader.pages):
-            page_dict = self._resolve(page)
-            if not isinstance(page_dict, DictionaryObject):
+        for index, (page_obj, object_ref) in enumerate(page_nodes):
+            page_dict: DictionaryObject | None
+            if isinstance(page_obj, DictionaryObject):
+                page_dict = page_obj
+            else:
+                resolved = self._resolve(page_obj)
+                page_dict = resolved if isinstance(resolved, DictionaryObject) else None
+
+            if page_dict is None:
                 continue
 
-            ref = getattr(page, "indirect_reference", None)
-            object_ref: tuple[int, int] | None = None
-            if isinstance(ref, IndirectObject):
-                object_ref = (ref.idnum, ref.generation)
-                if object_ref not in offsets:
-                    position = _search_object_offset(data, object_ref)
-                    if position is not None:
-                        offsets[object_ref] = position
+            if object_ref is not None and object_ref not in offsets:
+                position = _search_object_offset(data, object_ref)
+                if position is not None:
+                    offsets[object_ref] = position
 
             geometry = self._build_geometry(page_dict)
             resources = self._resolve_resources(page_dict)
