@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+
+os.environ.setdefault("INTELLIPDF_AUTH_SECRET", "intellipdf-test-secret")
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 

@@ -26,7 +26,24 @@ from .store import UserStore
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRES_IN_SECONDS = 15 * 60
 REFRESH_TOKEN_EXPIRES_IN_SECONDS = 7 * 24 * 60 * 60
-SECRET_KEY = os.getenv("INTELLIPDF_AUTH_SECRET", "intellipdf-development-secret")
+def _load_secret_key() -> str:
+    """Load the JWT signing key from the environment."""
+
+    secret = os.getenv("INTELLIPDF_AUTH_SECRET")
+    if not secret:
+        raise RuntimeError(
+            "INTELLIPDF_AUTH_SECRET must be set to a non-empty value before starting the service."
+        )
+
+    if secret == "intellipdf-development-secret":
+        raise RuntimeError(
+            "INTELLIPDF_AUTH_SECRET is using an insecure default value; please provide a unique secret."
+        )
+
+    return secret
+
+
+SECRET_KEY = _load_secret_key()
 
 
 class AuthService:
