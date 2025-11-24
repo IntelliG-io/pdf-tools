@@ -205,3 +205,6 @@ With the secrets in place, merging to `main` updates `pdfspoint.com`, merging to
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
+
+
+<!-- Security scan triggered at 2025-11-24 23:33:33 -->
